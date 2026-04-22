@@ -12,6 +12,7 @@
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <unistd.h>
+#import <fcntl.h>
 
 // ---------------------------------------------------------------------------
 #pragma mark - Handler entry (private)
@@ -169,6 +170,10 @@ static const NSUInteger kReadBufferSize = 65536;
     }
 
     _listenSocket = fd;
+
+    // Set non-blocking so accept() returns EAGAIN when no connections pending.
+    // Without this, the accept loop blocks _serverQueue and deadlocks route lookup.
+    fcntl(fd, F_SETFL, O_NONBLOCK);
 
     // 4. Create dispatch source for accepting new connections
     _acceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,
