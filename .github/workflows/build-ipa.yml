@@ -6,9 +6,13 @@ on:
     paths:
       - 'ClaudeFileServer/**'
       - '.github/workflows/build-ipa.yml'
+      - 'livecontainer-source.json'
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -40,12 +44,97 @@ jobs:
           cd ClaudeFileServer/build
           mkdir -p Payload
           cp -r ClaudeFileServer.xcarchive/Products/Applications/ClaudeFileServer.app Payload/
-          zip -r ClaudeFileServer-unsigned.ipa Payload
+          zip -r ClaudeFileServer.ipa Payload
           rm -rf Payload
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: ClaudeFileServer-unsigned
-          path: ClaudeFileServer/build/ClaudeFileServer-unsigned.ipa
+          path: ClaudeFileServer/build/ClaudeFileServer.ipa
           if-no-files-found: error
+
+      - name: Get version info
+        id: version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" ClaudeFileServer/ClaudeFileServer/Info.plist)
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" ClaudeFileServer/ClaudeFileServer/Info.plist)
+          IPA_SIZE=$(stat -f%z ClaudeFileServer/build/ClaudeFileServer.ipa)
+          DATE=$(date -u +%Y-%m-%d)
+          SHA=$(git rev-parse --short HEAD)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "ipa_size=${IPA_SIZE}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}-${BUILD}+${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          # Delete existing release/tag if it exists
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          # Create release
+          gh release create "$TAG" \
+            ClaudeFileServer/build/ClaudeFileServer.ipa \
+            --title "ClaudeFileServer ${{ steps.version.outputs.version }} (${{ steps.version.outputs.sha }})" \
+            --notes "Automated build from commit ${{ steps.version.outputs.sha }}" \
+            --latest
+
+      - name: Update LiveContainer source JSON
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/ClaudeFileServer.ipa"
+
+          cat > /tmp/livecontainer-source.json << ENDJSON
+          {
+            "name": "ClaudeFileServer",
+            "identifier": "com.claudecode.fileserver.source",
+            "subtitle": "Remote file access for Claude Code",
+            "description": "Browse and edit files on your iPhone from Claude Code running on WSL/macOS/Linux.",
+            "website": "https://github.com/${{ github.repository }}",
+            "apps": [
+              {
+                "name": "ClaudeFileServer",
+                "bundleIdentifier": "com.claudecode.fileserver",
+                "developerName": "sbruschke",
+                "subtitle": "HTTP file server for Claude Code",
+                "localizedDescription": "Lightweight HTTP server that exposes a REST API for file operations on your iPhone. Designed to run inside LiveContainer, giving Claude Code remote access to browse, read, write, and manage files across all LC guest app sandboxes.",
+                "iconURL": "https://raw.githubusercontent.com/${{ github.repository }}/main/icon.png",
+                "tintColor": "#DA7756",
+                "category": "utilities",
+                "version": "${{ steps.version.outputs.version }}",
+                "versionDate": "${{ steps.version.outputs.date }}",
+                "versionDescription": "Build from commit ${{ steps.version.outputs.sha }}",
+                "downloadURL": "${DOWNLOAD_URL}",
+                "size": ${{ steps.version.outputs.ipa_size }},
+                "versions": [
+                  {
+                    "version": "${{ steps.version.outputs.version }}",
+                    "date": "${{ steps.version.outputs.date }}",
+                    "localizedDescription": "Build from commit ${{ steps.version.outputs.sha }}",
+                    "downloadURL": "${DOWNLOAD_URL}",
+                    "size": ${{ steps.version.outputs.ipa_size }},
+                    "minOSVersion": "15.0"
+                  }
+                ]
+              }
+            ],
+            "news": []
+          }
+          ENDJSON
+
+          # Pretty-print and commit
+          python3 -m json.tool /tmp/livecontainer-source.json > livecontainer-source.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add livecontainer-source.json
+          git diff --cached --quiet || git commit -m "Update LiveContainer source (${TAG})" && git push
