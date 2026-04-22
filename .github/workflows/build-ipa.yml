@@ -1,0 +1,51 @@
+name: Build Unsigned IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ClaudeFileServer/**'
+      - '.github/workflows/build-ipa.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | tail -1)"
+
+      - name: Build archive
+        run: |
+          cd ClaudeFileServer
+          xcodebuild archive \
+            -project ClaudeFileServer.xcodeproj \
+            -scheme ClaudeFileServer \
+            -configuration Release \
+            -archivePath build/ClaudeFileServer.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            SKIP_INSTALL=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=NO
+
+      - name: Create unsigned IPA
+        run: |
+          cd ClaudeFileServer/build
+          mkdir -p Payload
+          cp -r ClaudeFileServer.xcarchive/Products/Applications/ClaudeFileServer.app Payload/
+          zip -r ClaudeFileServer-unsigned.ipa Payload
+          rm -rf Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeFileServer-unsigned
+          path: ClaudeFileServer/build/ClaudeFileServer-unsigned.ipa
+          if-no-files-found: error

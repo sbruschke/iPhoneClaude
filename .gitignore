@@ -1,0 +1,17 @@
+# Xcode
+ClaudeFileServer/build/
+*.xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
