@@ -1,0 +1,35 @@
+{
+    "name": "ClaudeFileServer",
+    "identifier": "com.claudecode.fileserver.source",
+    "subtitle": "Remote file access for Claude Code",
+    "description": "Browse and edit files on your iPhone from Claude Code running on WSL/macOS/Linux.",
+    "website": "https://github.com/sbruschke/iPhoneClaude",
+    "apps": [
+        {
+            "name": "ClaudeFileServer",
+            "bundleIdentifier": "com.claudecode.fileserver",
+            "developerName": "sbruschke",
+            "subtitle": "HTTP file server for Claude Code",
+            "localizedDescription": "Lightweight HTTP server that exposes a REST API for file operations on your iPhone. Designed to run inside LiveContainer, giving Claude Code remote access to browse, read, write, and manage files across all LC guest app sandboxes.",
+            "iconURL": "https://raw.githubusercontent.com/sbruschke/iPhoneClaude/main/icon.png",
+            "tintColor": "#DA7756",
+            "category": "utilities",
+            "version": "1.0",
+            "versionDate": "2026-04-22",
+            "versionDescription": "Build from commit c61eb3a",
+            "downloadURL": "https://github.com/sbruschke/iPhoneClaude/releases/download/v1.0-1+c61eb3a/ClaudeFileServer.ipa",
+            "size": 62834,
+            "versions": [
+                {
+                    "version": "1.0",
+                    "date": "2026-04-22",
+                    "localizedDescription": "Build from commit c61eb3a",
+                    "downloadURL": "https://github.com/sbruschke/iPhoneClaude/releases/download/v1.0-1+c61eb3a/ClaudeFileServer.ipa",
+                    "size": 62834,
+                    "minOSVersion": "15.0"
+                }
+            ]
+        }
+    ],
+    "news": []
+}
