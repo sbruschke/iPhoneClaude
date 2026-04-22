@@ -39,32 +39,32 @@ final class FileServer: ObservableObject {
 
     private func registerRoutes(on server: GCDWebServer) {
         // GET /api/info
-        server.addHandler(forMethod: "GET", path: "/api/info", requestClass: GCDWebServerRequest.self) { [weak self] request in
+        server.addHandler(forMethod: "GET", path: "/api/info", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleInfo(request: request)
         }
 
         // GET /api/ls
-        server.addHandler(forMethod: "GET", path: "/api/ls", requestClass: GCDWebServerRequest.self) { [weak self] request in
+        server.addHandler(forMethod: "GET", path: "/api/ls", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleLs(request: request)
         }
 
         // GET /api/read
-        server.addHandler(forMethod: "GET", path: "/api/read", requestClass: GCDWebServerRequest.self) { [weak self] request in
+        server.addHandler(forMethod: "GET", path: "/api/read", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleRead(request: request)
         }
 
         // POST /api/write
-        server.addHandler(forMethod: "POST", path: "/api/write", requestClass: GCDWebServerDataRequest.self) { [weak self] request in
+        server.addHandler(forMethod: "POST", path: "/api/write", request: GCDWebServerDataRequest.self) { [weak self] request in
             self?.handleWrite(request: request)
         }
 
         // DELETE /api/delete
-        server.addHandler(forMethod: "DELETE", path: "/api/delete", requestClass: GCDWebServerRequest.self) { [weak self] request in
+        server.addHandler(forMethod: "DELETE", path: "/api/delete", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleDelete(request: request)
         }
 
         // POST /api/mkdir
-        server.addHandler(forMethod: "POST", path: "/api/mkdir", requestClass: GCDWebServerDataRequest.self) { [weak self] request in
+        server.addHandler(forMethod: "POST", path: "/api/mkdir", request: GCDWebServerDataRequest.self) { [weak self] request in
             self?.handleMkdir(request: request)
         }
     }
