@@ -1,16 +1,24 @@
 import Foundation
 
 final class AuthMiddleware {
+    private static let tokenKey = "ClaudeFileServer.authToken"
     private var token: String
 
-    init(token: String? = nil) {
-        self.token = token ?? AuthMiddleware.generateToken()
+    init() {
+        if let saved = UserDefaults.standard.string(forKey: AuthMiddleware.tokenKey), !saved.isEmpty {
+            self.token = saved
+        } else {
+            let newToken = AuthMiddleware.generateToken()
+            UserDefaults.standard.set(newToken, forKey: AuthMiddleware.tokenKey)
+            self.token = newToken
+        }
     }
 
     var currentToken: String { token }
 
     func regenerateToken() {
         token = AuthMiddleware.generateToken()
+        UserDefaults.standard.set(token, forKey: AuthMiddleware.tokenKey)
     }
 
     /// Validates the Authorization header. Returns nil if valid, or an error response dict if invalid.

@@ -47,6 +47,15 @@ struct ContentView: View {
                             Text(copied ? "Copied!" : "Copy Connection Info")
                         }
                     }
+
+                    Button(role: .destructive) {
+                        server.auth.regenerateToken()
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Regenerate Token")
+                        }
+                    }
                 }
 
                 Section("Accessible Paths") {
