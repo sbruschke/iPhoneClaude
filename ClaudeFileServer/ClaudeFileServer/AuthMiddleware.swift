@@ -1,15 +1,15 @@
 import Foundation
 
 final class AuthMiddleware {
-    private static let tokenKey = "ClaudeFileServer.authToken"
+    private static let tokenFileName = ".claude_fileserver_token"
     private var token: String
 
     init() {
-        if let saved = UserDefaults.standard.string(forKey: AuthMiddleware.tokenKey), !saved.isEmpty {
+        if let saved = AuthMiddleware.readPersistedToken() {
             self.token = saved
         } else {
             let newToken = AuthMiddleware.generateToken()
-            UserDefaults.standard.set(newToken, forKey: AuthMiddleware.tokenKey)
+            AuthMiddleware.persistToken(newToken)
             self.token = newToken
         }
     }
@@ -18,7 +18,7 @@ final class AuthMiddleware {
 
     func regenerateToken() {
         token = AuthMiddleware.generateToken()
-        UserDefaults.standard.set(token, forKey: AuthMiddleware.tokenKey)
+        AuthMiddleware.persistToken(token)
     }
 
     /// Validates the Authorization header. Returns nil if valid, or an error response dict if invalid.
@@ -38,6 +38,45 @@ final class AuthMiddleware {
         }
 
         return nil // Authorized
+    }
+
+    // MARK: - Persistent token storage in LC shared container root
+
+    /// The LC container root is shared across all guest app reinstalls.
+    /// Store the token file there so it survives app updates.
+    private static func tokenFilePath() -> String? {
+        let home = NSHomeDirectory()
+        // In LC, home is like .../Data/Application/<UUID>
+        // The parent (.../Data/Application/) is the shared container root
+        let containerRoot = (home as NSString).deletingLastPathComponent
+        guard containerRoot != "/", FileManager.default.fileExists(atPath: containerRoot) else {
+            return nil
+        }
+        return (containerRoot as NSString).appendingPathComponent(tokenFileName)
+    }
+
+    private static func readPersistedToken() -> String? {
+        // Try shared container root first
+        if let path = tokenFilePath(),
+           let data = FileManager.default.contents(atPath: path),
+           let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            return token
+        }
+        // Fall back to UserDefaults (for non-LC environments)
+        if let saved = UserDefaults.standard.string(forKey: "ClaudeFileServer.authToken"), !saved.isEmpty {
+            return saved
+        }
+        return nil
+    }
+
+    private static func persistToken(_ token: String) {
+        // Write to shared container root
+        if let path = tokenFilePath() {
+            try? token.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        // Also save to UserDefaults as fallback
+        UserDefaults.standard.set(token, forKey: "ClaudeFileServer.authToken")
     }
 
     private func errorResponse(code: Int, message: String) -> [String: Any] {
