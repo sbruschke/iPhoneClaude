@@ -23,6 +23,18 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | tail -1)"
 
+      - name: Bump version from run number
+        run: |
+          # Give each build a unique version so LiveContainer's source list
+          # shows a new entry instead of collapsing every build into "1.0".
+          # CFBundleShortVersionString -> 1.0.<run_number> (the string LC shows)
+          # CFBundleVersion            -> <run_number> (monotonic build number)
+          RUN="${{ github.run_number }}"
+          PLIST=ClaudeFileServer/ClaudeFileServer/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.${RUN}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${RUN}" "$PLIST"
+          echo "Bumped to 1.0.${RUN} (build ${RUN})"
+
       - name: Build archive
         run: |
           cd ClaudeFileServer
