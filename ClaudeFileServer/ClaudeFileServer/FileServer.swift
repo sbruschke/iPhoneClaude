@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import UIKit
 
@@ -8,8 +9,13 @@ final class FileServer: ObservableObject {
 
     let auth: AuthMiddleware
     private var server: GCDWebServer?
+    private var bonjourService: NetService?
     private let fileOps = FileOperations.shared
     private let pathResolver = PathResolver.shared
+    // Serial queue to serialize /api/append writes across concurrent
+    // GCDWebServer handler dispatches so FileHandle open→seek→write→close
+    // can't interleave and corrupt the file.
+    private let appendQueue = DispatchQueue(label: "com.claudecode.fileserver.append")
 
     init() {
         self.auth = AuthMiddleware()
@@ -24,15 +30,40 @@ final class FileServer: ObservableObject {
 
         registerRoutes(on: webServer)
 
+        // The vendored GCDWebServer subset accepts a bonjourName arg but
+        // doesn't publish — we run our own NetService below.
         let started = webServer.start(withPort: port, bonjourName: nil)
         isRunning = started && webServer.isRunning
         ipAddress = Self.getWiFiAddress() ?? "unknown"
+
+        if isRunning {
+            publishBonjour()
+        }
     }
 
     func stop() {
+        bonjourService?.stop()
+        bonjourService = nil
         server?.stop()
         server = nil
         isRunning = false
+    }
+
+    private func publishBonjour() {
+        let service = NetService(domain: "local.",
+                                 type: "_claude-file-server._tcp.",
+                                 name: UIDevice.current.name,
+                                 port: Int32(port))
+        // TXT record advertises the service version so the client can
+        // tell builds apart during discovery.
+        let txt: [String: Data] = [
+            "version": Data("1.0".utf8),
+            "path": Data("/api".utf8),
+        ]
+        let txtData = NetService.data(fromTXTRecord: txt)
+        service.setTXTRecord(txtData)
+        service.publish()
+        bonjourService = service
     }
 
     // MARK: - Route Registration
@@ -86,6 +117,26 @@ final class FileServer: ObservableObject {
         // GET /api/zip_create?path=<dir> — stream a zip of <dir> back as application/zip
         server.addHandler(forMethod: "GET", path: "/api/zip_create", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleZipCreate(request: request)
+        }
+
+        // GET /api/stat?path=... — cheap metadata probe, no file content
+        server.addHandler(forMethod: "GET", path: "/api/stat", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleStat(request: request)
+        }
+
+        // GET /api/sha256?path=... — server-side hash, tiny response
+        server.addHandler(forMethod: "GET", path: "/api/sha256", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleSha256(request: request)
+        }
+
+        // GET /api/read_range?path=...&offset=N&length=M — raw bytes, no JSON wrapping
+        server.addHandler(forMethod: "GET", path: "/api/read_range", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleReadRange(request: request)
+        }
+
+        // POST /api/edit — {path, old_string, new_string, count?} server-side string replace
+        server.addHandler(forMethod: "POST", path: "/api/edit", request: GCDWebServerDataRequest.self) { [weak self] request in
+            self?.handleEdit(request: request)
         }
     }
 
@@ -237,7 +288,7 @@ final class FileServer: ObservableObject {
         }
 
         guard let resolved = pathResolver.validatePath(path) else {
-            return jsonError(403, "Access denied: \(path)")
+            return jsonError(403, "Access denied")
         }
 
         // Ensure parent directory exists
@@ -247,12 +298,11 @@ final class FileServer: ObservableObject {
                 try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
             }
         } catch {
-            return jsonError(500, "Failed to create parent directory: \(error.localizedDescription)")
+            return jsonError(500, "Failed to create parent directory")
         }
 
-        // Write raw binary body directly to the file
         if !FileManager.default.createFile(atPath: resolved, contents: body) {
-            return jsonError(500, "Write failed: \(resolved)")
+            return jsonError(500, "Write failed")
         }
 
         return GCDWebServerResponse(jsonObject: [
@@ -274,7 +324,7 @@ final class FileServer: ObservableObject {
         }
 
         guard let resolved = pathResolver.validatePath(path) else {
-            return jsonError(403, "Access denied: \(path)")
+            return jsonError(403, "Access denied")
         }
 
         // Ensure parent directory exists
@@ -284,24 +334,29 @@ final class FileServer: ObservableObject {
                 try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
             }
         } catch {
-            return jsonError(500, "Failed to create parent directory: \(error.localizedDescription)")
+            return jsonError(500, "Failed to create parent directory")
         }
 
-        // Append to file (create if doesn't exist)
-        if FileManager.default.fileExists(atPath: resolved) {
-            guard let handle = FileHandle(forWritingAtPath: resolved) else {
-                return jsonError(500, "Cannot open file for writing: \(resolved)")
+        // Serialize append ops per-server so concurrent requests can't
+        // interleave seek/write on the same file.
+        var totalSize: Int64 = 0
+        var failure: (Int, String)? = nil
+        appendQueue.sync {
+            if FileManager.default.fileExists(atPath: resolved) {
+                guard let handle = FileHandle(forWritingAtPath: resolved) else {
+                    failure = (500, "Cannot open file for writing")
+                    return
+                }
+                handle.seekToEndOfFile()
+                handle.write(chunk)
+                handle.closeFile()
+            } else {
+                FileManager.default.createFile(atPath: resolved, contents: chunk)
             }
-            handle.seekToEndOfFile()
-            handle.write(chunk)
-            handle.closeFile()
-        } else {
-            FileManager.default.createFile(atPath: resolved, contents: chunk)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
+            totalSize = (attrs?[.size] as? Int64) ?? 0
         }
-
-        // Get final file size
-        let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
-        let totalSize = (attrs?[.size] as? Int64) ?? 0
+        if let (code, msg) = failure { return jsonError(code, msg) }
 
         return GCDWebServerResponse(jsonObject: [
             "success": true,
@@ -321,14 +376,14 @@ final class FileServer: ObservableObject {
             return jsonError(400, "Empty request body (expected application/zip)")
         }
         guard let resolvedDest = pathResolver.validatePath(destPath) else {
-            return jsonError(403, "Access denied: \(destPath)")
+            return jsonError(403, "Access denied")
         }
 
         let fm = FileManager.default
         do {
             try fm.createDirectory(atPath: resolvedDest, withIntermediateDirectories: true)
         } catch {
-            return jsonError(500, "Failed to create destination: \(error.localizedDescription)")
+            return jsonError(500, "Failed to create destination")
         }
 
         // ZIPFoundation reads from a file URL or Data. Write the uploaded body
@@ -344,7 +399,7 @@ final class FileServer: ObservableObject {
         do {
             archive = try Archive(url: URL(fileURLWithPath: tmpZip), accessMode: .read)
         } catch {
-            return jsonError(400, "Uploaded body is not a valid zip: \(error.localizedDescription)")
+            return jsonError(400, "Uploaded body is not a valid zip")
         }
 
         var filesExtracted = 0
@@ -378,7 +433,7 @@ final class FileServer: ObservableObject {
                 }
             }
         } catch {
-            return jsonError(500, "Zip extract failed: \(error.localizedDescription)")
+            return jsonError(500, "Zip extract failed")
         }
 
         return GCDWebServerResponse(jsonObject: [
@@ -396,12 +451,12 @@ final class FileServer: ObservableObject {
             return jsonError(400, "Missing 'path' query parameter")
         }
         guard let resolvedSrc = pathResolver.validatePath(srcPath) else {
-            return jsonError(403, "Access denied: \(srcPath)")
+            return jsonError(403, "Access denied")
         }
 
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolvedSrc, isDirectory: &isDir), isDir.boolValue else {
-            return jsonError(400, "Not a directory: \(resolvedSrc)")
+            return jsonError(400, "Not a directory")
         }
 
         // NSFileCoordinator .forUploading produces a native .zip of the
@@ -421,10 +476,10 @@ final class FileServer: ObservableObject {
         }
 
         if let err = coordError {
-            return jsonError(500, "Zip create failed: \(err.localizedDescription)")
+            return jsonError(500, "Zip create failed")
         }
-        if let err = zipError {
-            return jsonError(500, "Zip read failed: \(err)")
+        if zipError != nil {
+            return jsonError(500, "Zip read failed")
         }
         guard let data = zipData else {
             return jsonError(500, "Zip create produced no data")
@@ -434,6 +489,186 @@ final class FileServer: ObservableObject {
         let name = (resolvedSrc as NSString).lastPathComponent
         resp.setValue("attachment; filename=\"\(name).zip\"", forAdditionalHeader: "Content-Disposition")
         return resp
+    }
+
+    private func handleStat(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+        guard let path = request.query["path"], !path.isEmpty else {
+            return jsonError(400, "Missing 'path' parameter")
+        }
+        guard let resolved = pathResolver.validatePath(path) else {
+            return jsonError(403, "Access denied")
+        }
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        let exists = fm.fileExists(atPath: resolved, isDirectory: &isDir)
+        if !exists {
+            return GCDWebServerResponse(jsonObject: [
+                "path": resolved, "exists": false,
+            ] as [String: Any])
+        }
+        let attrs = try? fm.attributesOfItem(atPath: resolved)
+        let size = (attrs?[.size] as? Int64) ?? 0
+        let modified = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+        let perms = (attrs?[.posixPermissions] as? Int) ?? 0
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return GCDWebServerResponse(jsonObject: [
+            "path": resolved,
+            "exists": true,
+            "isDirectory": isDir.boolValue,
+            "size": isDir.boolValue ? 0 : size,
+            "modified": fmt.string(from: modified),
+            "permissions": String(format: "%o", perms),
+        ] as [String: Any])
+    }
+
+    private func handleSha256(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+        guard let path = request.query["path"], !path.isEmpty else {
+            return jsonError(400, "Missing 'path' parameter")
+        }
+        guard let resolved = pathResolver.validatePath(path) else {
+            return jsonError(403, "Access denied")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir) else {
+            return jsonError(404, "Not found")
+        }
+        if isDir.boolValue {
+            return jsonError(400, "Is a directory")
+        }
+        // Stream-hash 64 KB at a time so we don't allocate the whole file.
+        guard let handle = FileHandle(forReadingAtPath: resolved) else {
+            return jsonError(500, "Read failed")
+        }
+        defer { handle.closeFile() }
+        var hasher = SHA256()
+        var total: Int64 = 0
+        while true {
+            let chunk = handle.readData(ofLength: 65536)
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+            total += Int64(chunk.count)
+        }
+        let digest = hasher.finalize()
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return GCDWebServerResponse(jsonObject: [
+            "path": resolved,
+            "size": total,
+            "sha256": hex,
+        ] as [String: Any])
+    }
+
+    private func handleReadRange(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+        guard let path = request.query["path"], !path.isEmpty else {
+            return jsonError(400, "Missing 'path' parameter")
+        }
+        guard let resolved = pathResolver.validatePath(path) else {
+            return jsonError(403, "Access denied")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir) else {
+            return jsonError(404, "Not found")
+        }
+        if isDir.boolValue {
+            return jsonError(400, "Is a directory")
+        }
+        let offset = Int64(request.query["offset"] ?? "0") ?? 0
+        let length = Int(request.query["length"] ?? "65536") ?? 65536
+        guard offset >= 0, length > 0, length <= 16 * 1024 * 1024 else {
+            return jsonError(400, "offset must be >=0, length in 1..16MB")
+        }
+        guard let handle = FileHandle(forReadingAtPath: resolved) else {
+            return jsonError(500, "Read failed")
+        }
+        defer { handle.closeFile() }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
+        let fileSize = (attrs?[.size] as? Int64) ?? 0
+        if offset >= fileSize {
+            // Empty range — return 0 bytes rather than erroring, so tail-reads
+            // of small files just come back empty.
+            let resp = GCDWebServerResponse(data: Data(), contentType: "application/octet-stream")
+            resp.setValue("\(fileSize)", forAdditionalHeader: "X-File-Size")
+            resp.setValue("\(offset)", forAdditionalHeader: "X-Range-Offset")
+            resp.setValue("0", forAdditionalHeader: "X-Range-Length")
+            return resp
+        }
+        handle.seek(toFileOffset: UInt64(offset))
+        let data = handle.readData(ofLength: length)
+        let resp = GCDWebServerResponse(data: data, contentType: "application/octet-stream")
+        resp.setValue("\(fileSize)", forAdditionalHeader: "X-File-Size")
+        resp.setValue("\(offset)", forAdditionalHeader: "X-Range-Offset")
+        resp.setValue("\(data.count)", forAdditionalHeader: "X-Range-Length")
+        return resp
+    }
+
+    private func handleEdit(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+        guard let dataReq = request as? GCDWebServerDataRequest,
+              let json = dataReq.jsonObject as? [String: Any],
+              let path = json["path"] as? String,
+              let oldStr = json["old_string"] as? String,
+              let newStr = json["new_string"] as? String else {
+            return jsonError(400, "Body must be {path, old_string, new_string, count?}")
+        }
+        if oldStr.isEmpty {
+            return jsonError(400, "old_string must not be empty")
+        }
+        let expected = (json["count"] as? Int) ?? 1  // 0 = replace all
+        guard let resolved = pathResolver.validatePath(path) else {
+            return jsonError(403, "Access denied")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir) else {
+            return jsonError(404, "Not found")
+        }
+        if isDir.boolValue {
+            return jsonError(400, "Is a directory")
+        }
+        guard let data = FileManager.default.contents(atPath: resolved),
+              let text = String(data: data, encoding: .utf8) else {
+            return jsonError(400, "File is not UTF-8 text")
+        }
+        // Count occurrences first so we can distinguish 0 vs >1.
+        var occurrences = 0
+        var searchRange = text.startIndex..<text.endIndex
+        while let found = text.range(of: oldStr, range: searchRange) {
+            occurrences += 1
+            searchRange = found.upperBound..<text.endIndex
+        }
+        if occurrences == 0 {
+            return jsonError(404, "old_string not found")
+        }
+        if expected > 0 && occurrences != expected {
+            return jsonError(409, "old_string occurs \(occurrences) times, expected \(expected)")
+        }
+        let replaced: String
+        if expected == 0 {
+            replaced = text.replacingOccurrences(of: oldStr, with: newStr)
+        } else {
+            // Replace exactly `expected` occurrences starting from the top.
+            var working = text
+            for _ in 0..<expected {
+                if let r = working.range(of: oldStr) {
+                    working.replaceSubrange(r, with: newStr)
+                }
+            }
+            replaced = working
+        }
+        guard let outData = replaced.data(using: .utf8) else {
+            return jsonError(500, "UTF-8 encode failed")
+        }
+        if !FileManager.default.createFile(atPath: resolved, contents: outData) {
+            return jsonError(500, "Write failed")
+        }
+        return GCDWebServerResponse(jsonObject: [
+            "success": true,
+            "path": resolved,
+            "replacements": expected > 0 ? expected : occurrences,
+            "new_size": outData.count,
+        ] as [String: Any])
     }
 
     // MARK: - Helpers

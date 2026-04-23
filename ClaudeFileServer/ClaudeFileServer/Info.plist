@@ -29,6 +29,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ClaudeFileServer needs local network access to serve files to Claude Code on your computer.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_claude-file-server._tcp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
