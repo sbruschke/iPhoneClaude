@@ -2,10 +2,40 @@ import CryptoKit
 import Foundation
 import UIKit
 
+struct RecentRequest: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let method: String
+    let path: String
+    let remote: String
+    let statusCode: Int
+}
+
+struct PendingPair: Identifiable {
+    let id = UUID()
+    let requester: String
+    let fingerprint: String
+    let respond: (Bool) -> Void
+}
+
 final class FileServer: ObservableObject {
     @Published var isRunning = false
     @Published var port: UInt = 8080
     @Published var ipAddress: String = "unknown"
+
+    // B: user-configurable label, surfaced in /api/ping and /api/info device.name
+    @Published var deviceLabel: String = UserDefaults.standard.string(forKey: "deviceLabel") ?? ""
+
+    // C: activity tracking
+    @Published var lastActivity: Date? = nil
+    @Published var recentRequests: [RecentRequest] = []
+    private let recentMax = 10
+
+    // D: pairing mode
+    @Published var pairingActive: Bool = false
+    @Published var pairingExpiresAt: Date? = nil
+    @Published var pendingPair: PendingPair? = nil
+    private var pairingTimer: Timer?
 
     let auth: AuthMiddleware
     private var server: GCDWebServer?
@@ -20,6 +50,61 @@ final class FileServer: ObservableObject {
     init() {
         self.auth = AuthMiddleware()
         self.ipAddress = Self.getWiFiAddress() ?? "unknown"
+    }
+
+    func setDeviceLabel(_ label: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        deviceLabel = trimmed
+        UserDefaults.standard.set(trimmed, forKey: "deviceLabel")
+    }
+
+    /// The name exposed to network peers — explicit label if set, else the
+    /// iOS device name.
+    func effectiveDeviceName() -> String {
+        let trimmed = deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? UIDevice.current.name : trimmed
+    }
+
+    func startPairingWindow(duration: TimeInterval = 60) {
+        pairingActive = true
+        pairingExpiresAt = Date().addingTimeInterval(duration)
+        pairingTimer?.invalidate()
+        pairingTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.pairingActive = false
+                self?.pairingExpiresAt = nil
+            }
+        }
+    }
+
+    func stopPairingWindow() {
+        pairingTimer?.invalidate()
+        pairingTimer = nil
+        pairingActive = false
+        pairingExpiresAt = nil
+        // If a pair is pending UI decision, deny it.
+        if let p = pendingPair {
+            p.respond(false)
+            pendingPair = nil
+        }
+    }
+
+    private func recordActivity(_ request: GCDWebServerRequest, statusCode: Int) {
+        let entry = RecentRequest(
+            timestamp: Date(),
+            method: request.method,
+            path: request.path,
+            remote: request.headers["X-Forwarded-For"] ?? "",
+            statusCode: statusCode
+        )
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lastActivity = entry.timestamp
+            self.recentRequests.insert(entry, at: 0)
+            if self.recentRequests.count > self.recentMax {
+                self.recentRequests.removeLast(self.recentRequests.count - self.recentMax)
+            }
+        }
     }
 
     func start() {
@@ -52,7 +137,7 @@ final class FileServer: ObservableObject {
     private func publishBonjour() {
         let service = NetService(domain: "local.",
                                  type: "_claude-file-server._tcp.",
-                                 name: UIDevice.current.name,
+                                 name: effectiveDeviceName(),
                                  port: Int32(port))
         // TXT record advertises the service version so the client can
         // tell builds apart during discovery.
@@ -68,83 +153,61 @@ final class FileServer: ObservableObject {
 
     // MARK: - Route Registration
 
+    /// Wrap a handler so every response is also logged in the activity feed.
+    private func tracked(_ handler: @escaping (GCDWebServerRequest) -> GCDWebServerResponse?)
+        -> (GCDWebServerRequest) -> GCDWebServerResponse?
+    {
+        return { [weak self] request in
+            let resp = handler(request)
+            self?.recordActivity(request, statusCode: resp?.statusCode ?? 0)
+            return resp
+        }
+    }
+
     private func registerRoutes(on server: GCDWebServer) {
-        // GET /api/info
-        server.addHandler(forMethod: "GET", path: "/api/info", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleInfo(request: request)
-        }
+        // Existing endpoints
+        server.addHandler(forMethod: "GET", path: "/api/info", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleInfo(request: r) })
+        server.addHandler(forMethod: "GET", path: "/api/ls", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleLs(request: r) })
+        server.addHandler(forMethod: "GET", path: "/api/read", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleRead(request: r) })
+        server.addHandler(forMethod: "POST", path: "/api/write", request: GCDWebServerDataRequest.self,
+                          handler: tracked { [weak self] r in self?.handleWrite(request: r) })
+        server.addHandler(forMethod: "DELETE", path: "/api/delete", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleDelete(request: r) })
+        server.addHandler(forMethod: "POST", path: "/api/mkdir", request: GCDWebServerDataRequest.self,
+                          handler: tracked { [weak self] r in self?.handleMkdir(request: r) })
+        server.addHandler(forMethod: "PUT", path: "/api/upload", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleUpload(request: r) })
+        server.addHandler(forMethod: "POST", path: "/api/append", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleAppend(request: r) })
+        server.addHandler(forMethod: "POST", path: "/api/zip_extract", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleZipExtract(request: r) })
+        server.addHandler(forMethod: "GET", path: "/api/zip_create", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleZipCreate(request: r) })
+        server.addHandler(forMethod: "GET", path: "/api/stat", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleStat(request: r) })
+        server.addHandler(forMethod: "GET", path: "/api/sha256", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleSha256(request: r) })
+        server.addHandler(forMethod: "GET", path: "/api/read_range", request: GCDWebServerRequest.self,
+                          handler: tracked { [weak self] r in self?.handleReadRange(request: r) })
+        server.addHandler(forMethod: "POST", path: "/api/edit", request: GCDWebServerDataRequest.self,
+                          handler: tracked { [weak self] r in self?.handleEdit(request: r) })
 
-        // GET /api/ls
-        server.addHandler(forMethod: "GET", path: "/api/ls", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleLs(request: request)
-        }
-
-        // GET /api/read
-        server.addHandler(forMethod: "GET", path: "/api/read", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleRead(request: request)
-        }
-
-        // POST /api/write
-        server.addHandler(forMethod: "POST", path: "/api/write", request: GCDWebServerDataRequest.self) { [weak self] request in
-            self?.handleWrite(request: request)
-        }
-
-        // DELETE /api/delete
-        server.addHandler(forMethod: "DELETE", path: "/api/delete", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleDelete(request: request)
-        }
-
-        // POST /api/mkdir
-        server.addHandler(forMethod: "POST", path: "/api/mkdir", request: GCDWebServerDataRequest.self) { [weak self] request in
-            self?.handleMkdir(request: request)
-        }
-
-        // PUT /api/upload?path=... — raw binary upload (no JSON/base64 overhead)
-        server.addHandler(forMethod: "PUT", path: "/api/upload", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleUpload(request: request)
-        }
-
-        // POST /api/append?path=... — append raw binary to existing file
-        server.addHandler(forMethod: "POST", path: "/api/append", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleAppend(request: request)
-        }
-
-        // POST /api/zip_extract?path=<dir> — body is application/zip, unzip into <dir>
-        server.addHandler(forMethod: "POST", path: "/api/zip_extract", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleZipExtract(request: request)
-        }
-
-        // GET /api/zip_create?path=<dir> — stream a zip of <dir> back as application/zip
-        server.addHandler(forMethod: "GET", path: "/api/zip_create", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleZipCreate(request: request)
-        }
-
-        // GET /api/stat?path=... — cheap metadata probe, no file content
-        server.addHandler(forMethod: "GET", path: "/api/stat", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleStat(request: request)
-        }
-
-        // GET /api/sha256?path=... — server-side hash, tiny response
-        server.addHandler(forMethod: "GET", path: "/api/sha256", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleSha256(request: request)
-        }
-
-        // GET /api/read_range?path=...&offset=N&length=M — raw bytes, no JSON wrapping
-        server.addHandler(forMethod: "GET", path: "/api/read_range", request: GCDWebServerRequest.self) { [weak self] request in
-            self?.handleReadRange(request: request)
-        }
-
-        // POST /api/edit — {path, old_string, new_string, count?} server-side string replace
-        server.addHandler(forMethod: "POST", path: "/api/edit", request: GCDWebServerDataRequest.self) { [weak self] request in
-            self?.handleEdit(request: request)
-        }
-
-        // GET /api/ping — UNAUTHENTICATED minimal device info for LAN
-        // discovery. Leaks device name only; acceptable for this use case
-        // since we want LAN peers to identify each phone by name.
+        // /api/ping — UNAUTHENTICATED, minimal device info for LAN discovery.
+        // Not tracked so opening the app and discovering from many clients
+        // doesn't spam the activity feed.
         server.addHandler(forMethod: "GET", path: "/api/ping", request: GCDWebServerRequest.self) { [weak self] _ in
             self?.handlePing()
         }
+
+        // POST /api/pair_request — blocks until the user taps Approve/Deny
+        // in the app UI (inside the pairing window). Returns the auth token
+        // on approval. Tracked so the approval shows up in Recent Requests.
+        server.addHandler(forMethod: "POST", path: "/api/pair_request",
+                          request: GCDWebServerDataRequest.self,
+                          handler: tracked { [weak self] r in self?.handlePairRequest(request: r) })
     }
 
     // MARK: - Route Handlers
@@ -157,7 +220,9 @@ final class FileServer: ObservableObject {
 
         let response: [String: Any] = [
             "device": [
-                "name": device.name,
+                "name": effectiveDeviceName(),
+                "ios_name": device.name,
+                "label": deviceLabel,
                 "model": device.model,
                 "systemName": device.systemName,
                 "systemVersion": device.systemVersion
@@ -500,8 +565,6 @@ final class FileServer: ObservableObject {
 
     private func handlePing() -> GCDWebServerResponse? {
         let device = UIDevice.current
-        // Server version is the plist CFBundleShortVersionString (set per
-        // build by the workflow, e.g. "1.0.14").
         let bundle = Bundle.main
         let serverVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
@@ -510,10 +573,67 @@ final class FileServer: ObservableObject {
             "api_version": "1.0",
             "server_version": serverVersion,
             "build": build,
-            "device_name": device.name,
+            "device_name": effectiveDeviceName(),
+            "ios_device_name": device.name,
+            "label": deviceLabel,
+            "pairing_active": pairingActive,
             "model": device.model,
             "system_name": device.systemName,
             "system_version": device.systemVersion,
+            "port": port,
+        ] as [String: Any])
+    }
+
+    private func handlePairRequest(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        // No checkAuth — pairing is how the caller GETS a token. It's
+        // gated by the in-app pairing window instead.
+        guard pairingActive else {
+            return jsonError(403, "Pairing window is not open. Tap 'Accept Pairing Requests' in the ClaudeFileServer app first.")
+        }
+        guard let dataReq = request as? GCDWebServerDataRequest,
+              let json = dataReq.jsonObject as? [String: Any] else {
+            return jsonError(400, "Body must be JSON {requester, fingerprint?}")
+        }
+        let requester = (json["requester"] as? String) ?? "Unknown client"
+        let fingerprint = (json["fingerprint"] as? String) ?? ""
+
+        // Bounce the UI prompt onto main and block this handler thread
+        // until the user taps Approve / Deny, or we time out at 30 s.
+        let sema = DispatchSemaphore(value: 0)
+        var approved = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { sema.signal(); return }
+            self.pendingPair = PendingPair(
+                requester: requester,
+                fingerprint: fingerprint,
+                respond: { decision in
+                    approved = decision
+                    sema.signal()
+                }
+            )
+        }
+        let outcome = sema.wait(timeout: .now() + 30.0)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.pendingPair = nil
+        }
+
+        if outcome == .timedOut {
+            return jsonError(408, "User did not respond in time")
+        }
+        if !approved {
+            return jsonError(403, "Denied by user")
+        }
+        // Successful pairing consumes the window so repeated pairings need
+        // an explicit re-enable.
+        DispatchQueue.main.async { [weak self] in
+            self?.stopPairingWindow()
+        }
+        return GCDWebServerResponse(jsonObject: [
+            "success": true,
+            "token": auth.currentToken,
+            "device_name": effectiveDeviceName(),
+            "label": deviceLabel,
             "port": port,
         ] as [String: Any])
     }
