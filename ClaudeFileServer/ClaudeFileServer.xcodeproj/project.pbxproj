@@ -19,6 +19,27 @@
 		A1B2C3D4E5F600010000B104 /* GCDWebServerDataRequest.m in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600010000B204 /* GCDWebServerDataRequest.m */; };
 		A1B2C3D4E5F600010000B105 /* GCDWebServerDataResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600010000B205 /* GCDWebServerDataResponse.m */; };
 		A1B2C3D4E5F60001000003AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60001000004AA /* Assets.xcassets */; };
+		A1B2C3D4E5F6000100000Z01BF /* Archive+BackingConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z01FR /* Archive+BackingConfiguration.swift */; };
+		A1B2C3D4E5F6000100000Z02BF /* Archive+Deprecated.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z02FR /* Archive+Deprecated.swift */; };
+		A1B2C3D4E5F6000100000Z03BF /* Archive+Helpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z03FR /* Archive+Helpers.swift */; };
+		A1B2C3D4E5F6000100000Z04BF /* Archive+MemoryFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z04FR /* Archive+MemoryFile.swift */; };
+		A1B2C3D4E5F6000100000Z05BF /* Archive+Progress.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z05FR /* Archive+Progress.swift */; };
+		A1B2C3D4E5F6000100000Z06BF /* Archive+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z06FR /* Archive+Reading.swift */; };
+		A1B2C3D4E5F6000100000Z07BF /* Archive+ReadingDeprecated.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z07FR /* Archive+ReadingDeprecated.swift */; };
+		A1B2C3D4E5F6000100000Z08BF /* Archive+Writing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z08FR /* Archive+Writing.swift */; };
+		A1B2C3D4E5F6000100000Z09BF /* Archive+WritingDeprecated.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z09FR /* Archive+WritingDeprecated.swift */; };
+		A1B2C3D4E5F6000100000Z10BF /* Archive+ZIP64.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z10FR /* Archive+ZIP64.swift */; };
+		A1B2C3D4E5F6000100000Z11BF /* Archive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z11FR /* Archive.swift */; };
+		A1B2C3D4E5F6000100000Z12BF /* Data+Compression.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z12FR /* Data+Compression.swift */; };
+		A1B2C3D4E5F6000100000Z13BF /* Data+CompressionDeprecated.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z13FR /* Data+CompressionDeprecated.swift */; };
+		A1B2C3D4E5F6000100000Z14BF /* Data+Serialization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z14FR /* Data+Serialization.swift */; };
+		A1B2C3D4E5F6000100000Z15BF /* Date+ZIP.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z15FR /* Date+ZIP.swift */; };
+		A1B2C3D4E5F6000100000Z16BF /* Entry+Serialization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z16FR /* Entry+Serialization.swift */; };
+		A1B2C3D4E5F6000100000Z17BF /* Entry+ZIP64.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z17FR /* Entry+ZIP64.swift */; };
+		A1B2C3D4E5F6000100000Z18BF /* Entry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z18FR /* Entry.swift */; };
+		A1B2C3D4E5F6000100000Z19BF /* FileManager+ZIP.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z19FR /* FileManager+ZIP.swift */; };
+		A1B2C3D4E5F6000100000Z20BF /* FileManager+ZIPDeprecated.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z20FR /* FileManager+ZIPDeprecated.swift */; };
+		A1B2C3D4E5F6000100000Z21BF /* URL+ZIP.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000100000Z21FR /* URL+ZIP.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +63,27 @@
 		A1B2C3D4E5F600010000B304 /* GCDWebServerDataRequest.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GCDWebServerDataRequest.h; sourceTree = "<group>"; };
 		A1B2C3D4E5F600010000B205 /* GCDWebServerDataResponse.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerDataResponse.m; sourceTree = "<group>"; };
 		A1B2C3D4E5F600010000B305 /* GCDWebServerDataResponse.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GCDWebServerDataResponse.h; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z01FR /* Archive+BackingConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+BackingConfiguration.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z02FR /* Archive+Deprecated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+Deprecated.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z03FR /* Archive+Helpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+Helpers.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z04FR /* Archive+MemoryFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+MemoryFile.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z05FR /* Archive+Progress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+Progress.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z06FR /* Archive+Reading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+Reading.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z07FR /* Archive+ReadingDeprecated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+ReadingDeprecated.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z08FR /* Archive+Writing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+Writing.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z09FR /* Archive+WritingDeprecated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+WritingDeprecated.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z10FR /* Archive+ZIP64.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+ZIP64.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z11FR /* Archive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z12FR /* Data+Compression.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Data+Compression.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z13FR /* Data+CompressionDeprecated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Data+CompressionDeprecated.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z14FR /* Data+Serialization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Data+Serialization.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z15FR /* Date+ZIP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Date+ZIP.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z16FR /* Entry+Serialization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Entry+Serialization.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z17FR /* Entry+ZIP64.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Entry+ZIP64.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z18FR /* Entry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Entry.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z19FR /* FileManager+ZIP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileManager+ZIP.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z20FR /* FileManager+ZIPDeprecated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileManager+ZIPDeprecated.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000100000Z21FR /* URL+ZIP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ZIP.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -92,8 +134,37 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D4E5F600010000E3AA /* GCDWebServer */,
+				A1B2C3D4E5F6000100000ZGRP /* ZIPFoundation */,
 			);
 			path = Vendor;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F6000100000ZGRP /* ZIPFoundation */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F6000100000Z01FR /* Archive+BackingConfiguration.swift */,
+				A1B2C3D4E5F6000100000Z02FR /* Archive+Deprecated.swift */,
+				A1B2C3D4E5F6000100000Z03FR /* Archive+Helpers.swift */,
+				A1B2C3D4E5F6000100000Z04FR /* Archive+MemoryFile.swift */,
+				A1B2C3D4E5F6000100000Z05FR /* Archive+Progress.swift */,
+				A1B2C3D4E5F6000100000Z06FR /* Archive+Reading.swift */,
+				A1B2C3D4E5F6000100000Z07FR /* Archive+ReadingDeprecated.swift */,
+				A1B2C3D4E5F6000100000Z08FR /* Archive+Writing.swift */,
+				A1B2C3D4E5F6000100000Z09FR /* Archive+WritingDeprecated.swift */,
+				A1B2C3D4E5F6000100000Z10FR /* Archive+ZIP64.swift */,
+				A1B2C3D4E5F6000100000Z11FR /* Archive.swift */,
+				A1B2C3D4E5F6000100000Z12FR /* Data+Compression.swift */,
+				A1B2C3D4E5F6000100000Z13FR /* Data+CompressionDeprecated.swift */,
+				A1B2C3D4E5F6000100000Z14FR /* Data+Serialization.swift */,
+				A1B2C3D4E5F6000100000Z15FR /* Date+ZIP.swift */,
+				A1B2C3D4E5F6000100000Z16FR /* Entry+Serialization.swift */,
+				A1B2C3D4E5F6000100000Z17FR /* Entry+ZIP64.swift */,
+				A1B2C3D4E5F6000100000Z18FR /* Entry.swift */,
+				A1B2C3D4E5F6000100000Z19FR /* FileManager+ZIP.swift */,
+				A1B2C3D4E5F6000100000Z20FR /* FileManager+ZIPDeprecated.swift */,
+				A1B2C3D4E5F6000100000Z21FR /* URL+ZIP.swift */,
+			);
+			path = ZIPFoundation;
 			sourceTree = "<group>";
 		};
 		A1B2C3D4E5F600010000E3AA /* GCDWebServer */ = {
@@ -217,6 +288,27 @@
 				A1B2C3D4E5F600010000B103 /* GCDWebServerResponse.m in Sources */,
 				A1B2C3D4E5F600010000B104 /* GCDWebServerDataRequest.m in Sources */,
 				A1B2C3D4E5F600010000B105 /* GCDWebServerDataResponse.m in Sources */,
+				A1B2C3D4E5F6000100000Z01BF /* Archive+BackingConfiguration.swift in Sources */,
+				A1B2C3D4E5F6000100000Z02BF /* Archive+Deprecated.swift in Sources */,
+				A1B2C3D4E5F6000100000Z03BF /* Archive+Helpers.swift in Sources */,
+				A1B2C3D4E5F6000100000Z04BF /* Archive+MemoryFile.swift in Sources */,
+				A1B2C3D4E5F6000100000Z05BF /* Archive+Progress.swift in Sources */,
+				A1B2C3D4E5F6000100000Z06BF /* Archive+Reading.swift in Sources */,
+				A1B2C3D4E5F6000100000Z07BF /* Archive+ReadingDeprecated.swift in Sources */,
+				A1B2C3D4E5F6000100000Z08BF /* Archive+Writing.swift in Sources */,
+				A1B2C3D4E5F6000100000Z09BF /* Archive+WritingDeprecated.swift in Sources */,
+				A1B2C3D4E5F6000100000Z10BF /* Archive+ZIP64.swift in Sources */,
+				A1B2C3D4E5F6000100000Z11BF /* Archive.swift in Sources */,
+				A1B2C3D4E5F6000100000Z12BF /* Data+Compression.swift in Sources */,
+				A1B2C3D4E5F6000100000Z13BF /* Data+CompressionDeprecated.swift in Sources */,
+				A1B2C3D4E5F6000100000Z14BF /* Data+Serialization.swift in Sources */,
+				A1B2C3D4E5F6000100000Z15BF /* Date+ZIP.swift in Sources */,
+				A1B2C3D4E5F6000100000Z16BF /* Entry+Serialization.swift in Sources */,
+				A1B2C3D4E5F6000100000Z17BF /* Entry+ZIP64.swift in Sources */,
+				A1B2C3D4E5F6000100000Z18BF /* Entry.swift in Sources */,
+				A1B2C3D4E5F6000100000Z19BF /* FileManager+ZIP.swift in Sources */,
+				A1B2C3D4E5F6000100000Z20BF /* FileManager+ZIPDeprecated.swift in Sources */,
+				A1B2C3D4E5F6000100000Z21BF /* URL+ZIP.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
