@@ -167,7 +167,7 @@ def iphone_ls(path: str) -> str:
 
 
 @mcp.tool()
-def iphone_ls_recursive(path: str, max_depth: int | None = None) -> str:
+def iphone_ls_recursive(path: str, max_depth: int = 5, max_entries: int = 2000) -> str:
     """Recursively walk a directory on the iPhone in ONE MCP call.
 
     Issues /api/ls sequentially for each subdirectory over the shared HTTP
@@ -176,15 +176,19 @@ def iphone_ls_recursive(path: str, max_depth: int | None = None) -> str:
 
     Args:
         path: Absolute path to the root directory.
-        max_depth: If set, limits recursion depth (root = depth 0).
+        max_depth: Limits recursion depth (root = depth 0). Default 5.
+                   Pass a large number for unbounded, but mind context cost.
+        max_entries: Hard cap on total entries returned. Extra entries are
+                     truncated (reported in `truncated: true`). Default 2000.
     """
     tree: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     dir_count = 0
+    truncated = False
 
     def walk(current: str, depth: int) -> None:
-        nonlocal dir_count
-        if max_depth is not None and depth > max_depth:
+        nonlocal dir_count, truncated
+        if depth > max_depth or truncated:
             return
         try:
             data = _get("ls", {"path": current})
@@ -193,6 +197,9 @@ def iphone_ls_recursive(path: str, max_depth: int | None = None) -> str:
             return
         dir_count += 1
         for entry in data.get("entries", []):
+            if len(tree) >= max_entries:
+                truncated = True
+                return
             tree.append({
                 "path": entry["path"],
                 "name": entry["name"],
@@ -209,9 +216,117 @@ def iphone_ls_recursive(path: str, max_depth: int | None = None) -> str:
         "root": path,
         "directories_scanned": dir_count,
         "total_entries": len(tree),
+        "truncated": truncated,
+        "max_depth": max_depth,
+        "max_entries": max_entries,
         "errors": errors,
         "entries": tree,
     }, indent=2)
+
+
+@mcp.tool()
+def iphone_stat(path: str) -> str:
+    """Cheap metadata probe — returns {exists, size, modified, isDirectory,
+    permissions} WITHOUT reading file content. Use this before iphone_read
+    to avoid pulling a huge file into context unintentionally.
+
+    Args:
+        path: Absolute path on the iPhone.
+    """
+    return json.dumps(_get("stat", {"path": path}), indent=2)
+
+
+@mcp.tool()
+def iphone_sha256(path: str) -> str:
+    """Server-side SHA-256 of a file. Tiny response (~100 bytes) — use to
+    verify sync integrity without pulling content.
+
+    Args:
+        path: Absolute path to a file on the iPhone.
+    """
+    return json.dumps(_get("sha256", {"path": path}), indent=2)
+
+
+@mcp.tool()
+def iphone_view(path: str, head_bytes: int = 4096, tail_bytes: int = 0) -> str:
+    """Peek at a file without loading the whole thing into context.
+
+    Streams just the head and/or tail bytes via /api/read_range (raw
+    bytes, no JSON base64 wrapping). Decodes as UTF-8 where possible,
+    otherwise returns base64.
+
+    Args:
+        path: Absolute path to a file on the iPhone.
+        head_bytes: Bytes to read from the start. 0 = skip. Default 4096.
+        tail_bytes: Bytes to read from the end. 0 = skip. Default 0.
+    """
+    if head_bytes < 0 or tail_bytes < 0:
+        raise RuntimeError("byte counts must be >= 0")
+    if head_bytes == 0 and tail_bytes == 0:
+        raise RuntimeError("at least one of head_bytes/tail_bytes must be > 0")
+
+    global _client
+    out: dict[str, Any] = {"path": path}
+
+    def _range(offset: int, length: int) -> tuple[bytes, dict[str, str]]:
+        resp = _client.get(
+            f"{_base_url()}/read_range",
+            params={"path": path, "offset": str(offset), "length": str(length)},
+            headers=_auth_headers(),
+        )
+        resp.raise_for_status()
+        return resp.content, {k.lower(): v for k, v in resp.headers.items()}
+
+    if head_bytes > 0:
+        data, hdrs = _range(0, head_bytes)
+        out["file_size"] = int(hdrs.get("x-file-size", "0"))
+        try:
+            out["head_text"] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            out["head_base64"] = base64.b64encode(data).decode("ascii")
+        out["head_bytes_read"] = len(data)
+
+    if tail_bytes > 0:
+        size = int(out.get("file_size", 0)) if head_bytes > 0 else int(
+            json.loads(iphone_stat(path)).get("size", 0)
+        )
+        offset = max(0, size - tail_bytes)
+        data, hdrs = _range(offset, tail_bytes)
+        out.setdefault("file_size", int(hdrs.get("x-file-size", size)))
+        try:
+            out["tail_text"] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            out["tail_base64"] = base64.b64encode(data).decode("ascii")
+        out["tail_bytes_read"] = len(data)
+        out["tail_offset"] = offset
+
+    return json.dumps(out, indent=2)
+
+
+@mcp.tool()
+def iphone_edit(path: str, old_string: str, new_string: str, count: int = 1) -> str:
+    """Server-side exact string replace on a UTF-8 text file.
+
+    Mirrors Claude's Edit tool semantics: the server validates the match
+    count, replaces in place, and returns only {replacements, new_size} —
+    keeping file content entirely OUT of Claude's context.
+
+    Args:
+        path: Absolute path to a UTF-8 text file on the iPhone.
+        old_string: Exact substring to replace. Must not be empty.
+        new_string: Replacement.
+        count: Expected occurrence count. Default 1 (errors if ambiguous).
+               Pass 0 to replace all occurrences.
+    """
+    return json.dumps(
+        _post("edit", {
+            "path": path,
+            "old_string": old_string,
+            "new_string": new_string,
+            "count": count,
+        }),
+        indent=2,
+    )
 
 
 @mcp.tool()
