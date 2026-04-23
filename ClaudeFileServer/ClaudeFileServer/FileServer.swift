@@ -340,8 +340,11 @@ final class FileServer: ObservableObject {
         }
         defer { try? fm.removeItem(atPath: tmpZip) }
 
-        guard let archive = Archive(url: URL(fileURLWithPath: tmpZip), accessMode: .read) else {
-            return jsonError(400, "Uploaded body is not a valid zip")
+        let archive: Archive
+        do {
+            archive = try Archive(url: URL(fileURLWithPath: tmpZip), accessMode: .read)
+        } catch {
+            return jsonError(400, "Uploaded body is not a valid zip: \(error.localizedDescription)")
         }
 
         var filesExtracted = 0
@@ -427,7 +430,7 @@ final class FileServer: ObservableObject {
             return jsonError(500, "Zip create produced no data")
         }
 
-        let resp = GCDWebServerDataResponse(data: data, contentType: "application/zip")
+        let resp = GCDWebServerResponse(data: data, contentType: "application/zip")
         let name = (resolvedSrc as NSString).lastPathComponent
         resp.setValue("attachment; filename=\"\(name).zip\"", forAdditionalHeader: "Content-Disposition")
         return resp
