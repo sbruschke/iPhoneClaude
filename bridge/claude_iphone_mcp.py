@@ -752,8 +752,8 @@ def iphone_pair(host: str, name: str = "", port: str = "8080") -> str:
     cfg["phones"].append({
         "name": final_name, "host": host, "port": port, "token": token,
     })
-    if not cfg.get("active") or cfg.get("active") == "env":
-        cfg["active"] = final_name
+    # Pairing a phone implies you want to use it next — always flip active.
+    cfg["active"] = final_name
     _save_config(cfg)
 
     return json.dumps({
