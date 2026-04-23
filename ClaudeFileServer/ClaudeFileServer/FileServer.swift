@@ -67,6 +67,11 @@ final class FileServer: ObservableObject {
         server.addHandler(forMethod: "POST", path: "/api/mkdir", request: GCDWebServerDataRequest.self) { [weak self] request in
             self?.handleMkdir(request: request)
         }
+
+        // PUT /api/upload?path=... — raw binary upload (no JSON/base64 overhead)
+        server.addHandler(forMethod: "PUT", path: "/api/upload", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleUpload(request: request)
+        }
     }
 
     // MARK: - Route Handlers
@@ -203,6 +208,43 @@ final class FileServer: ObservableObject {
         } catch {
             return jsonError(statusCode(for: error), error.localizedDescription)
         }
+    }
+
+    private func handleUpload(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+
+        guard let path = request.query["path"], !path.isEmpty else {
+            return jsonError(400, "Missing 'path' query parameter")
+        }
+
+        guard let body = request.body, body.count > 0 else {
+            return jsonError(400, "Empty request body")
+        }
+
+        guard let resolved = pathResolver.validatePath(path) else {
+            return jsonError(403, "Access denied: \(path)")
+        }
+
+        // Ensure parent directory exists
+        let parent = (resolved as NSString).deletingLastPathComponent
+        do {
+            if !FileManager.default.fileExists(atPath: parent) {
+                try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            }
+        } catch {
+            return jsonError(500, "Failed to create parent directory: \(error.localizedDescription)")
+        }
+
+        // Write raw binary body directly to the file
+        if !FileManager.default.createFile(atPath: resolved, contents: body) {
+            return jsonError(500, "Write failed: \(resolved)")
+        }
+
+        return GCDWebServerResponse(jsonObject: [
+            "success": true,
+            "path": path,
+            "size": body.count
+        ] as [String: Any])
     }
 
     // MARK: - Helpers

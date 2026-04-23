@@ -100,6 +100,19 @@ def iphone_write(path: str, content: str, encoding: str = "utf-8") -> str:
     return json.dumps(result, indent=2)
 
 
+def _upload_binary(endpoint: str, path: str, data: bytes) -> dict[str, Any]:
+    """Upload raw binary data via PUT."""
+    with httpx.Client(timeout=120) as client:
+        resp = client.put(
+            f"{_base_url()}/{endpoint}",
+            params={"path": path},
+            content=data,
+            headers={**_headers(), "Content-Type": "application/octet-stream"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 @mcp.tool()
 def iphone_delete(path: str) -> str:
     """Delete a file or directory on the iPhone.
