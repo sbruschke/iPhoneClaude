@@ -167,33 +167,33 @@ final class FileServer: ObservableObject {
     private func registerRoutes(on server: GCDWebServer) {
         // Existing endpoints
         server.addHandler(forMethod: "GET", path: "/api/info", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleInfo(request: r) })
+                          handler: tracked { [weak self] r in self?.handleInfo(request: r) })
         server.addHandler(forMethod: "GET", path: "/api/ls", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleLs(request: r) })
+                          handler: tracked { [weak self] r in self?.handleLs(request: r) })
         server.addHandler(forMethod: "GET", path: "/api/read", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleRead(request: r) })
+                          handler: tracked { [weak self] r in self?.handleRead(request: r) })
         server.addHandler(forMethod: "POST", path: "/api/write", request: GCDWebServerDataRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleWrite(request: r) })
+                          handler: tracked { [weak self] r in self?.handleWrite(request: r) })
         server.addHandler(forMethod: "DELETE", path: "/api/delete", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleDelete(request: r) })
+                          handler: tracked { [weak self] r in self?.handleDelete(request: r) })
         server.addHandler(forMethod: "POST", path: "/api/mkdir", request: GCDWebServerDataRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleMkdir(request: r) })
+                          handler: tracked { [weak self] r in self?.handleMkdir(request: r) })
         server.addHandler(forMethod: "PUT", path: "/api/upload", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleUpload(request: r) })
+                          handler: tracked { [weak self] r in self?.handleUpload(request: r) })
         server.addHandler(forMethod: "POST", path: "/api/append", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleAppend(request: r) })
+                          handler: tracked { [weak self] r in self?.handleAppend(request: r) })
         server.addHandler(forMethod: "POST", path: "/api/zip_extract", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleZipExtract(request: r) })
+                          handler: tracked { [weak self] r in self?.handleZipExtract(request: r) })
         server.addHandler(forMethod: "GET", path: "/api/zip_create", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleZipCreate(request: r) })
+                          handler: tracked { [weak self] r in self?.handleZipCreate(request: r) })
         server.addHandler(forMethod: "GET", path: "/api/stat", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleStat(request: r) })
+                          handler: tracked { [weak self] r in self?.handleStat(request: r) })
         server.addHandler(forMethod: "GET", path: "/api/sha256", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleSha256(request: r) })
+                          handler: tracked { [weak self] r in self?.handleSha256(request: r) })
         server.addHandler(forMethod: "GET", path: "/api/read_range", request: GCDWebServerRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleReadRange(request: r) })
+                          handler: tracked { [weak self] r in self?.handleReadRange(request: r) })
         server.addHandler(forMethod: "POST", path: "/api/edit", request: GCDWebServerDataRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handleEdit(request: r) })
+                          handler: tracked { [weak self] r in self?.handleEdit(request: r) })
 
         // /api/ping — UNAUTHENTICATED, minimal device info for LAN discovery.
         // Not tracked so opening the app and discovering from many clients
@@ -207,7 +207,7 @@ final class FileServer: ObservableObject {
         // on approval. Tracked so the approval shows up in Recent Requests.
         server.addHandler(forMethod: "POST", path: "/api/pair_request",
                           request: GCDWebServerDataRequest.self,
-                          processBlock: tracked { [weak self] r in self?.handlePairRequest(request: r) })
+                          handler: tracked { [weak self] r in self?.handlePairRequest(request: r) })
     }
 
     // MARK: - Route Handlers
