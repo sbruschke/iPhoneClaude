@@ -85,10 +85,16 @@ Add to your Claude Code MCP config (`~/.claude/mcp_config.json`):
 Restart Claude Code. You'll have these tools available:
 - `iphone_info` — Device info and accessible paths
 - `iphone_ls` — List directory
+- `iphone_ls_recursive` — Walk a tree server-side in one MCP call
 - `iphone_read` — Read file
-- `iphone_write` — Write file
+- `iphone_write` — Write file (UTF-8 or base64)
+- `iphone_upload_binary` — PUT a local file as raw bytes
+- `iphone_pull` — Stream a remote file to local disk (content stays out of context)
 - `iphone_delete` — Delete file/directory
 - `iphone_mkdir` — Create directory
+- `iphone_extract_zip` — Upload a local zip, extract on phone (after IPA update)
+- `iphone_create_zip` — Zip a remote dir and pull locally (after IPA update)
+- `iphone_sync` — Zip local dir → upload → extract on phone (one-shot tree install)
 
 ## API Endpoints
 
@@ -100,12 +106,17 @@ All endpoints require `Authorization: Bearer <token>` header.
 | GET | `/api/ls?path=...` | List directory |
 | GET | `/api/read?path=...` | Read file (UTF-8 or base64) |
 | POST | `/api/write` | Write file `{path, content, encoding}` |
+| PUT | `/api/upload?path=...` | Upload raw binary body (no JSON/base64 overhead) |
+| POST | `/api/append?path=...` | Append raw binary body to file |
 | DELETE | `/api/delete?path=...` | Delete file/directory |
 | POST | `/api/mkdir` | Create directory `{path}` |
+| POST | `/api/zip_extract?path=<dir>` | Body is `application/zip` — unzip into `<dir>`. Returns `{files_extracted, bytes_written}` |
+| GET | `/api/zip_create?path=<dir>` | Streams back a `application/zip` of `<dir>` (built via `NSFileCoordinator` `.forUploading`) |
 
 ## Architecture Notes
 
 - **No private APIs** — pure public SDK, safe for LiveContainer
 - **No background modes** — avoids LC crash triggers
 - **GCDWebServer** vendored as source — zero external dependencies
+- **ZIPFoundation** (MIT, weichsel/ZIPFoundation 0.9.20) vendored under `Vendor/ZIPFoundation/` as source, not SwiftPM. The zlib branch of `Data+Compression.swift` is disabled so no `libz.tbd` linkage is required; the pure-Swift `builtInCRC32` fallback is used instead.
 - **Sandbox-aware** — LC guest apps share the same sandbox container, so files from other LC apps are accessible

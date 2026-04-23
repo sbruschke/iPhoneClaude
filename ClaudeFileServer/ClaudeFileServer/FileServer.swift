@@ -77,6 +77,16 @@ final class FileServer: ObservableObject {
         server.addHandler(forMethod: "POST", path: "/api/append", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleAppend(request: request)
         }
+
+        // POST /api/zip_extract?path=<dir> — body is application/zip, unzip into <dir>
+        server.addHandler(forMethod: "POST", path: "/api/zip_extract", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleZipExtract(request: request)
+        }
+
+        // GET /api/zip_create?path=<dir> — stream a zip of <dir> back as application/zip
+        server.addHandler(forMethod: "GET", path: "/api/zip_create", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleZipCreate(request: request)
+        }
     }
 
     // MARK: - Route Handlers
@@ -299,6 +309,131 @@ final class FileServer: ObservableObject {
             "appendedBytes": chunk.count,
             "totalSize": totalSize
         ] as [String: Any])
+    }
+
+    private func handleZipExtract(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+
+        guard let destPath = request.query["path"], !destPath.isEmpty else {
+            return jsonError(400, "Missing 'path' query parameter")
+        }
+        guard let body = request.body, body.count > 0 else {
+            return jsonError(400, "Empty request body (expected application/zip)")
+        }
+        guard let resolvedDest = pathResolver.validatePath(destPath) else {
+            return jsonError(403, "Access denied: \(destPath)")
+        }
+
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(atPath: resolvedDest, withIntermediateDirectories: true)
+        } catch {
+            return jsonError(500, "Failed to create destination: \(error.localizedDescription)")
+        }
+
+        // ZIPFoundation reads from a file URL or Data. Write the uploaded body
+        // to a tmp zip, open as Archive, iterate entries, extract each under
+        // resolvedDest.
+        let tmpZip = (NSTemporaryDirectory() as NSString).appendingPathComponent("cfs_upload_\(UUID().uuidString).zip")
+        guard fm.createFile(atPath: tmpZip, contents: body) else {
+            return jsonError(500, "Failed to stage upload zip")
+        }
+        defer { try? fm.removeItem(atPath: tmpZip) }
+
+        let archive: Archive
+        do {
+            archive = try Archive(url: URL(fileURLWithPath: tmpZip), accessMode: .read)
+        } catch {
+            return jsonError(400, "Uploaded body is not a valid zip: \(error.localizedDescription)")
+        }
+
+        var filesExtracted = 0
+        var bytesWritten: Int64 = 0
+        let destURL = URL(fileURLWithPath: resolvedDest)
+        do {
+            for entry in archive {
+                let entryURL = destURL.appendingPathComponent(entry.path)
+                // Path-traversal guard: the final resolved path must still be
+                // under destURL.
+                let standardized = entryURL.standardizedFileURL.path
+                guard standardized.hasPrefix(destURL.standardizedFileURL.path) else {
+                    return jsonError(400, "Unsafe entry path in zip: \(entry.path)")
+                }
+                switch entry.type {
+                case .directory:
+                    try fm.createDirectory(at: entryURL, withIntermediateDirectories: true)
+                case .file:
+                    try fm.createDirectory(at: entryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    // extract throws if the file already exists; sync workflow
+                    // expects overwrite semantics.
+                    if fm.fileExists(atPath: entryURL.path) {
+                        try fm.removeItem(at: entryURL)
+                    }
+                    _ = try archive.extract(entry, to: entryURL)
+                    bytesWritten += Int64(entry.uncompressedSize)
+                    filesExtracted += 1
+                case .symlink:
+                    // Skip symlinks for safety.
+                    continue
+                }
+            }
+        } catch {
+            return jsonError(500, "Zip extract failed: \(error.localizedDescription)")
+        }
+
+        return GCDWebServerResponse(jsonObject: [
+            "success": true,
+            "path": resolvedDest,
+            "files_extracted": filesExtracted,
+            "bytes_written": bytesWritten
+        ] as [String: Any])
+    }
+
+    private func handleZipCreate(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+
+        guard let srcPath = request.query["path"], !srcPath.isEmpty else {
+            return jsonError(400, "Missing 'path' query parameter")
+        }
+        guard let resolvedSrc = pathResolver.validatePath(srcPath) else {
+            return jsonError(403, "Access denied: \(srcPath)")
+        }
+
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedSrc, isDirectory: &isDir), isDir.boolValue else {
+            return jsonError(400, "Not a directory: \(resolvedSrc)")
+        }
+
+        // NSFileCoordinator .forUploading produces a native .zip of the
+        // directory in a tmp location. Public API, no deps.
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        var zipData: Data?
+        var zipError: String?
+        let srcURL = URL(fileURLWithPath: resolvedSrc)
+
+        coordinator.coordinate(readingItemAt: srcURL, options: [.forUploading], error: &coordError) { (zipURL: URL) in
+            do {
+                zipData = try Data(contentsOf: zipURL)
+            } catch {
+                zipError = error.localizedDescription
+            }
+        }
+
+        if let err = coordError {
+            return jsonError(500, "Zip create failed: \(err.localizedDescription)")
+        }
+        if let err = zipError {
+            return jsonError(500, "Zip read failed: \(err)")
+        }
+        guard let data = zipData else {
+            return jsonError(500, "Zip create produced no data")
+        }
+
+        let resp = GCDWebServerResponse(data: data, contentType: "application/zip")
+        let name = (resolvedSrc as NSString).lastPathComponent
+        resp.setValue("attachment; filename=\"\(name).zip\"", forAdditionalHeader: "Content-Disposition")
+        return resp
     }
 
     // MARK: - Helpers
