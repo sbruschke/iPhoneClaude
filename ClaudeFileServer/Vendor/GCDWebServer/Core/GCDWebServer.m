@@ -262,13 +262,23 @@ static const int kReadTimeoutSecs = 30;
 // ---------------------------------------------------------------------------
 
 /// Read exactly `length` bytes from `fd` into `buffer`.
-/// Returns YES on success.  On failure the caller must close the fd.
+/// Returns YES on success. Retries on EINTR. Logs errno + partial count on
+/// failure so body-size regressions don't vanish as "Empty reply from server".
 static BOOL _ReadExact(int fd, void *buffer, NSUInteger length) {
     NSUInteger totalRead = 0;
     uint8_t *dst = (uint8_t *)buffer;
     while (totalRead < length) {
         ssize_t n = read(fd, dst + totalRead, length - totalRead);
-        if (n <= 0) {
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            NSLog(@"[GCDWebServer] _ReadExact read() failed: errno=%d (%s), got %lu/%lu bytes",
+                  errno, strerror(errno),
+                  (unsigned long)totalRead, (unsigned long)length);
+            return NO;
+        }
+        if (n == 0) {
+            NSLog(@"[GCDWebServer] _ReadExact peer closed mid-body: got %lu/%lu bytes",
+                  (unsigned long)totalRead, (unsigned long)length);
             return NO;
         }
         totalRead += (NSUInteger)n;
@@ -333,7 +343,12 @@ static NSString *_HeaderValue(NSDictionary<NSString *, NSString *> *headers, NSS
     NSRange headerEnd = NSMakeRange(NSNotFound, 0);
     while (headerEnd.location == NSNotFound) {
         ssize_t n = read(fd, buf, kHeaderReadBufSize);
+        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) {
+            if (n < 0) {
+                NSLog(@"[GCDWebServer] header read() failed: errno=%d (%s)",
+                      errno, strerror(errno));
+            }
             free(buf);
             return;
         }
@@ -449,9 +464,14 @@ static NSString *_HeaderValue(NSDictionary<NSString *, NSString *> *headers, NSS
             return;
         }
 
-        // Handle "Expect: 100-continue" — client won't send body until we respond
+        // Handle "Expect: 100-continue" — client won't send body until we respond.
+        // Bug fix: [nil caseInsensitiveCompare:] returns 0 == NSOrderedSame, so
+        // without the nil guard we sent an unsolicited 100 Continue on every
+        // request that had a body, which confused some clients once the body
+        // crossed the initial TCP receive window.
         NSString *expectHeader = _HeaderValue(headers, @"Expect");
-        if ([expectHeader caseInsensitiveCompare:@"100-continue"] == NSOrderedSame) {
+        if (expectHeader &&
+            [expectHeader caseInsensitiveCompare:@"100-continue"] == NSOrderedSame) {
             const char *cont = "HTTP/1.1 100 Continue\r\n\r\n";
             write(fd, cont, strlen(cont));
         }
@@ -476,6 +496,15 @@ static NSString *_HeaderValue(NSDictionary<NSString *, NSString *> *headers, NSS
             BOOL ok = _ReadExact(fd, tmp, remaining);
             if (!ok) {
                 free(tmp);
+                // Previously we just `return;` here, producing "Empty reply from
+                // server" with zero diagnostics. Send an actual error response
+                // so the client can see + log what happened.
+                int savedErrno = errno;
+                NSString *msg = [NSString stringWithFormat:
+                    @"Body read failed after %lu/%lu bytes (errno=%d %s)",
+                    (unsigned long)bodyData.length, (unsigned long)contentLength,
+                    savedErrno, strerror(savedErrno)];
+                [self _sendErrorResponse:fd statusCode:400 message:msg];
                 return;
             }
             [bodyData appendBytes:tmp length:remaining];
