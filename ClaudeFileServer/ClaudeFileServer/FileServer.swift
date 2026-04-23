@@ -138,6 +138,13 @@ final class FileServer: ObservableObject {
         server.addHandler(forMethod: "POST", path: "/api/edit", request: GCDWebServerDataRequest.self) { [weak self] request in
             self?.handleEdit(request: request)
         }
+
+        // GET /api/ping — UNAUTHENTICATED minimal device info for LAN
+        // discovery. Leaks device name only; acceptable for this use case
+        // since we want LAN peers to identify each phone by name.
+        server.addHandler(forMethod: "GET", path: "/api/ping", request: GCDWebServerRequest.self) { [weak self] _ in
+            self?.handlePing()
+        }
     }
 
     // MARK: - Route Handlers
@@ -489,6 +496,26 @@ final class FileServer: ObservableObject {
         let name = (resolvedSrc as NSString).lastPathComponent
         resp.setValue("attachment; filename=\"\(name).zip\"", forAdditionalHeader: "Content-Disposition")
         return resp
+    }
+
+    private func handlePing() -> GCDWebServerResponse? {
+        let device = UIDevice.current
+        // Server version is the plist CFBundleShortVersionString (set per
+        // build by the workflow, e.g. "1.0.14").
+        let bundle = Bundle.main
+        let serverVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        return GCDWebServerResponse(jsonObject: [
+            "service": "claude-file-server",
+            "api_version": "1.0",
+            "server_version": serverVersion,
+            "build": build,
+            "device_name": device.name,
+            "model": device.model,
+            "system_name": device.systemName,
+            "system_version": device.systemVersion,
+            "port": port,
+        ] as [String: Any])
     }
 
     private func handleStat(request: GCDWebServerRequest) -> GCDWebServerResponse? {

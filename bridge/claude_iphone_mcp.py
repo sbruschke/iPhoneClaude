@@ -1,52 +1,104 @@
 """
 ClaudeFileServer MCP Bridge — Gives Claude Code native tools to access iPhone files.
 
-Environment variables:
-    IPHONE_HOST  — iPhone IP address
-    IPHONE_PORT  — Server port (default: 8080)
-    IPHONE_TOKEN — Auth token from the iOS app
+Multi-phone configuration:
+    Phones are registered in ~/.iphone_bridge.json (host, port, token, name).
+    If that file is missing but IPHONE_HOST/IPHONE_TOKEN env vars are set,
+    the bridge auto-bootstraps them as the first registered phone.
+
+    Tools:
+        iphone_discover()              — LAN-scan for ClaudeFileServer responders
+        iphone_register(host, token)   — add a phone to the config
+        iphone_list_phones()           — show registered phones + which is active
+        iphone_select(name_or_host)    — switch the active phone for subsequent calls
+        iphone_unregister(name_or_host)— remove a phone
 
 Install: pip install -r requirements.txt
 Run: python claude_iphone_mcp.py
 """
 
 import base64
+import concurrent.futures
 import hashlib
+import ipaddress
 import json
 import os
+import pathlib
+import subprocess
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 import zipfile
 from typing import Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-HOST = os.environ.get("IPHONE_HOST", "")
-PORT = os.environ.get("IPHONE_PORT", "8080")
-TOKEN = os.environ.get("IPHONE_TOKEN", "")
+CONFIG_PATH = pathlib.Path.home() / ".iphone_bridge.json"
 
 mcp = FastMCP("iphone-file-server")
 
 
 _CONFIG_HINT = (
-    "Configure the MCP server in ~/.claude.json under "
-    "mcpServers.iphone.env — set IPHONE_HOST (phone's LAN IP) and "
-    "IPHONE_TOKEN (token shown in the ClaudeFileServer app). "
-    "Run iphone_discover() to find the phone via mDNS."
+    "No phones configured. Run iphone_discover() to scan the LAN, then "
+    "iphone_register(host, token, name) with the token shown in the app. "
+    "Or set IPHONE_HOST / IPHONE_TOKEN env vars for a single-phone setup."
 )
 
 
+def _load_config() -> dict[str, Any]:
+    if CONFIG_PATH.exists():
+        try:
+            return json.loads(CONFIG_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    # Bootstrap from env for single-phone setup. Preserves backward compat
+    # with existing ~/.claude.json configurations.
+    env_host = os.environ.get("IPHONE_HOST", "")
+    env_token = os.environ.get("IPHONE_TOKEN", "")
+    if env_host and env_token:
+        return {
+            "active": "env",
+            "phones": [{
+                "name": "env",
+                "host": env_host,
+                "port": os.environ.get("IPHONE_PORT", "8080"),
+                "token": env_token,
+            }],
+        }
+    return {"active": None, "phones": []}
+
+
+def _save_config(cfg: dict[str, Any]) -> None:
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    # Tokens live in this file — restrict to owner-only.
+    try:
+        CONFIG_PATH.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _active_phone() -> dict[str, str]:
+    cfg = _load_config()
+    phones = cfg.get("phones") or []
+    if not phones:
+        raise RuntimeError(_CONFIG_HINT)
+    active_name = cfg.get("active")
+    for p in phones:
+        if p["name"] == active_name:
+            return p
+    return phones[0]
+
+
 def _base_url() -> str:
-    if not HOST:
-        raise RuntimeError(f"IPHONE_HOST not set. {_CONFIG_HINT}")
-    return f"http://{HOST}:{PORT}/api"
+    p = _active_phone()
+    return f"http://{p['host']}:{p.get('port', '8080')}/api"
 
 
 def _auth_headers() -> dict[str, str]:
-    if not TOKEN:
-        raise RuntimeError(f"IPHONE_TOKEN not set. {_CONFIG_HINT}")
-    return {"Authorization": f"Bearer {TOKEN}"}
+    p = _active_phone()
+    return {"Authorization": f"Bearer {p['token']}"}
 
 
 # Shared client: one TCP connection pool reused across all calls. The phone's
@@ -525,59 +577,215 @@ def iphone_sync(local_dir: str, remote_dir: str) -> str:
     }, indent=2)
 
 
-@mcp.tool()
-def iphone_discover(timeout_sec: float = 3.0) -> str:
-    """Discover ClaudeFileServer instances on the LAN via mDNS/Bonjour.
+# --- Multi-phone: discovery + registration ----------------------------------
 
-    Requires the `zeroconf` Python package (pip install zeroconf). Returns
-    a list of {name, host, port, version} entries — paste the matching
-    host into IPHONE_HOST in ~/.claude.json.
+def _local_ipv4_subnets() -> list[ipaddress.IPv4Network]:
+    """Return /24 subnets for this machine's non-loopback IPv4 interfaces.
+
+    We deliberately cap to /24 even if the interface has a wider netmask,
+    to keep the scan bounded. Most home LANs are /24 anyway.
+    """
+    subnets: list[ipaddress.IPv4Network] = []
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr"],
+            capture_output=True, text=True, timeout=2.0,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return subnets
+    # Skip interfaces that are obviously virtual bridges (docker, KVM, etc.)
+    # where no iPhone will ever be reachable.
+    skip_prefixes = ("docker", "br-", "virbr", "veth", "tun", "tap", "podman")
+    for line in out.splitlines():
+        parts = line.split()
+        try:
+            ifname = parts[1]
+            cidr = parts[3]  # e.g. 192.168.1.210/24
+        except IndexError:
+            continue
+        if any(ifname.startswith(p) for p in skip_prefixes):
+            continue
+        try:
+            iface = ipaddress.ip_interface(cidr)
+        except ValueError:
+            continue
+        if not isinstance(iface.network, ipaddress.IPv4Network):
+            continue
+        if iface.ip.is_loopback or iface.ip.is_link_local:
+            continue
+        # Force to /24 around this address to bound the scan.
+        octets = str(iface.ip).split(".")
+        net = ipaddress.ip_network(f"{'.'.join(octets[:3])}.0/24")
+        if net not in subnets:
+            subnets.append(net)
+    return subnets
+
+
+def _probe_ping(host: str, port: str, timeout: float) -> dict[str, Any] | None:
+    """Hit GET http://host:port/api/ping (unauthenticated). Return parsed
+    JSON on success, None on any failure. Used by iphone_discover only."""
+    url = f"http://{host}:{port}/api/ping"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            body = resp.read(8192)
+            data = json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+    if data.get("service") != "claude-file-server":
+        return None
+    data["host"] = host
+    data["port"] = port
+    return data
+
+
+@mcp.tool()
+def iphone_discover(port: str = "8080", per_host_timeout_sec: float = 0.3,
+                    workers: int = 64) -> str:
+    """LAN-scan for ClaudeFileServer instances. Returns the device name,
+    model, iOS version, and server version of every responder — no auth
+    needed (the /api/ping endpoint is open).
+
+    Paste a host into `iphone_register(host="…", token="…", name="…")`
+    with the token from that phone's ClaudeFileServer UI.
 
     Args:
-        timeout_sec: How long to listen for service announcements. Default 3s.
+        port: TCP port to probe. Default 8080.
+        per_host_timeout_sec: Per-host connect/read timeout. Default 0.3s.
+        workers: Parallel probes. Default 64 (/24 finishes in ~1-2s).
+    """
+    subnets = _local_ipv4_subnets()
+    if not subnets:
+        raise RuntimeError("Could not determine local IPv4 subnets")
+    hosts = [str(h) for net in subnets for h in net.hosts()]
+    found: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        for result in ex.map(
+            lambda h: _probe_ping(h, port, per_host_timeout_sec),
+            hosts,
+        ):
+            if result is not None:
+                found.append(result)
+    return json.dumps({
+        "subnets_scanned": [str(s) for s in subnets],
+        "hosts_probed": len(hosts),
+        "found": found,
+        "count": len(found),
+    }, indent=2)
+
+
+@mcp.tool()
+def iphone_register(host: str, token: str, name: str = "",
+                    port: str = "8080") -> str:
+    """Register an iPhone with the bridge. Verifies the token against
+    /api/info, then stores {name, host, port, token} in ~/.iphone_bridge.json.
+    If no `name` is provided, the phone's own device name is used.
+
+    Becomes the active phone if none was set.
+
+    Args:
+        host: iPhone LAN IP address.
+        token: Auth token shown in the ClaudeFileServer app.
+        name: Optional label (e.g. "iPhone 16"). Defaults to device name.
+        port: Default 8080.
     """
     try:
-        from zeroconf import ServiceBrowser, Zeroconf
-    except ImportError:
-        raise RuntimeError(
-            "zeroconf not installed. `pip install zeroconf` (bridge venv) "
-            "to use mDNS discovery. Or set IPHONE_HOST manually in ~/.claude.json."
+        resp = httpx.get(
+            f"http://{host}:{port}/api/info",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5.0,
         )
-    import socket as _socket
+        resp.raise_for_status()
+        info = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"Could not reach {host}:{port} with that token: {exc}")
 
-    found: list[dict[str, Any]] = []
+    device_name = info.get("device", {}).get("name", host)
+    final_name = name or device_name
 
-    class _Listener:
-        def add_service(self, zc: Any, type_: str, name: str) -> None:
-            info = zc.get_service_info(type_, name)
-            if info is None:
-                return
-            addrs = info.parsed_scoped_addresses() if hasattr(info, "parsed_scoped_addresses") else []
-            if not addrs:
-                addrs = [_socket.inet_ntoa(a) for a in getattr(info, "addresses", []) if len(a) == 4]
-            props = {
-                (k.decode() if isinstance(k, bytes) else k):
-                (v.decode() if isinstance(v, bytes) else v)
-                for k, v in (info.properties or {}).items()
-            }
-            found.append({
-                "name": name.split(".")[0],
-                "hosts": addrs,
-                "port": info.port,
-                "version": props.get("version", ""),
-            })
+    cfg = _load_config()
+    cfg.setdefault("phones", [])
+    # Remove any prior entry with the same name OR same host — we're
+    # re-registering either way.
+    cfg["phones"] = [p for p in cfg["phones"]
+                     if p["name"] != final_name and p["host"] != host]
+    cfg["phones"].append({
+        "name": final_name,
+        "host": host,
+        "port": port,
+        "token": token,
+    })
+    if not cfg.get("active") or cfg.get("active") == "env":
+        cfg["active"] = final_name
+    _save_config(cfg)
 
-        def update_service(self, *args: Any, **kwargs: Any) -> None: pass
-        def remove_service(self, *args: Any, **kwargs: Any) -> None: pass
+    return json.dumps({
+        "registered": final_name,
+        "host": host,
+        "port": port,
+        "device_name": device_name,
+        "active": cfg["active"],
+        "total_phones": len(cfg["phones"]),
+    }, indent=2)
 
-    zc = Zeroconf()
-    try:
-        ServiceBrowser(zc, "_claude-file-server._tcp.local.", _Listener())
-        time.sleep(timeout_sec)
-    finally:
-        zc.close()
 
-    return json.dumps({"found": found, "count": len(found)}, indent=2)
+@mcp.tool()
+def iphone_list_phones() -> str:
+    """List registered iPhones and which one is active. Tokens are redacted."""
+    cfg = _load_config()
+    redacted = [{
+        "name": p["name"],
+        "host": p["host"],
+        "port": p.get("port", "8080"),
+        "token_prefix": (p["token"][:6] + "…") if p.get("token") else "",
+    } for p in cfg.get("phones", [])]
+    return json.dumps({
+        "active": cfg.get("active"),
+        "phones": redacted,
+        "config_path": str(CONFIG_PATH),
+    }, indent=2)
+
+
+@mcp.tool()
+def iphone_select(name_or_host: str) -> str:
+    """Switch the active iPhone for subsequent tool calls. Match is by
+    name first, host second.
+    """
+    cfg = _load_config()
+    for p in cfg.get("phones", []):
+        if p["name"] == name_or_host or p["host"] == name_or_host:
+            cfg["active"] = p["name"]
+            _save_config(cfg)
+            return json.dumps({
+                "active": p["name"],
+                "host": p["host"],
+                "port": p.get("port", "8080"),
+            }, indent=2)
+    known = [p["name"] for p in cfg.get("phones", [])]
+    raise RuntimeError(f"No registered phone matches '{name_or_host}'. Known: {known}")
+
+
+@mcp.tool()
+def iphone_unregister(name_or_host: str) -> str:
+    """Remove an iPhone from the registered list. If the active phone is
+    removed, the first remaining phone becomes active (or None if empty).
+    """
+    cfg = _load_config()
+    before = len(cfg.get("phones", []))
+    cfg["phones"] = [p for p in cfg.get("phones", [])
+                     if p["name"] != name_or_host and p["host"] != name_or_host]
+    after = len(cfg["phones"])
+    names = {p["name"] for p in cfg["phones"]}
+    if cfg.get("active") not in names:
+        cfg["active"] = cfg["phones"][0]["name"] if cfg["phones"] else None
+    _save_config(cfg)
+    return json.dumps({
+        "removed": before - after,
+        "remaining": after,
+        "active": cfg.get("active"),
+    }, indent=2)
 
 
 if __name__ == "__main__":
