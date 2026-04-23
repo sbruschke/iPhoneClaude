@@ -61,14 +61,26 @@ _client = _new_client()
 _RETRYABLE = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError)
 
 
-def _send(method: str, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+def _send(method: str, endpoint: str, *, retry: bool = True, **kwargs: Any) -> dict[str, Any]:
+    """Send a request with optional retry on stale keepalive.
+
+    retry=False is mandatory for non-idempotent endpoints (append,
+    zip_extract) where a dropped response after server-side success would
+    cause a retry to duplicate data. Everything else we expose is
+    idempotent: mkdir/write/upload overwrite, DELETE is handled specially
+    (404 on retry = previous attempt succeeded).
+    """
     global _client
     url = f"{_base_url()}/{endpoint}"
     headers = {**_auth_headers(), **kwargs.pop("headers", {})}
+    tries = 4 if retry else 1
     last_exc: Exception | None = None
-    for attempt in range(4):
+    for attempt in range(tries):
         try:
             resp = _client.request(method, url, headers=headers, **kwargs)
+            if method == "DELETE" and attempt > 0 and resp.status_code == 404:
+                return {"success": True, "already_deleted": True,
+                        "path": kwargs.get("params", {}).get("path", "")}
             resp.raise_for_status()
             return resp.json()
         except _RETRYABLE as exc:
@@ -78,7 +90,6 @@ def _send(method: str, endpoint: str, **kwargs: Any) -> dict[str, Any]:
             except Exception:
                 pass
             _client = _new_client()
-            # Small backoff — phone radio may be asleep.
             time.sleep(0.2 * (attempt + 1))
     raise last_exc  # type: ignore[misc]
 
@@ -87,31 +98,34 @@ def _get(endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
     return _send("GET", endpoint, params=params)
 
 
-def _post(endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
-    return _send("POST", endpoint, json=body)
+def _post(endpoint: str, body: dict[str, Any], *, retry: bool = True) -> dict[str, Any]:
+    return _send("POST", endpoint, json=body, retry=retry)
 
 
 def _delete(endpoint: str, params: dict[str, str]) -> dict[str, Any]:
     return _send("DELETE", endpoint, params=params)
 
 
-def _put_binary(endpoint: str, path: str, data: bytes) -> dict[str, Any]:
+def _put_binary(endpoint: str, path: str, data: bytes, *, retry: bool = True) -> dict[str, Any]:
     return _send(
         "PUT",
         endpoint,
         params={"path": path},
         content=data,
         headers={"Content-Type": "application/octet-stream"},
+        retry=retry,
     )
 
 
-def _post_binary(endpoint: str, params: dict[str, str], data: bytes, content_type: str) -> dict[str, Any]:
+def _post_binary(endpoint: str, params: dict[str, str], data: bytes,
+                 content_type: str, *, retry: bool = True) -> dict[str, Any]:
     return _send(
         "POST",
         endpoint,
         params=params,
         content=data,
         headers={"Content-Type": content_type},
+        retry=retry,
     )
 
 
@@ -307,6 +321,7 @@ def iphone_extract_zip(local_zip_path: str, remote_dest: str) -> str:
         params={"path": remote_dest},
         data=data,
         content_type="application/zip",
+        retry=False,
     )
     return json.dumps(result, indent=2)
 
@@ -375,6 +390,7 @@ def iphone_sync(local_dir: str, remote_dir: str) -> str:
         params={"path": remote_dir},
         data=zip_bytes,
         content_type="application/zip",
+        retry=False,
     )
     return json.dumps({
         "local_dir": os.path.abspath(local_dir),

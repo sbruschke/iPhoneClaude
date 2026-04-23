@@ -10,6 +10,10 @@ final class FileServer: ObservableObject {
     private var server: GCDWebServer?
     private let fileOps = FileOperations.shared
     private let pathResolver = PathResolver.shared
+    // Serial queue to serialize /api/append writes across concurrent
+    // GCDWebServer handler dispatches so FileHandle open→seek→write→close
+    // can't interleave and corrupt the file.
+    private let appendQueue = DispatchQueue(label: "com.claudecode.fileserver.append")
 
     init() {
         self.auth = AuthMiddleware()
@@ -237,7 +241,7 @@ final class FileServer: ObservableObject {
         }
 
         guard let resolved = pathResolver.validatePath(path) else {
-            return jsonError(403, "Access denied: \(path)")
+            return jsonError(403, "Access denied")
         }
 
         // Ensure parent directory exists
@@ -247,12 +251,11 @@ final class FileServer: ObservableObject {
                 try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
             }
         } catch {
-            return jsonError(500, "Failed to create parent directory: \(error.localizedDescription)")
+            return jsonError(500, "Failed to create parent directory")
         }
 
-        // Write raw binary body directly to the file
         if !FileManager.default.createFile(atPath: resolved, contents: body) {
-            return jsonError(500, "Write failed: \(resolved)")
+            return jsonError(500, "Write failed")
         }
 
         return GCDWebServerResponse(jsonObject: [
@@ -274,7 +277,7 @@ final class FileServer: ObservableObject {
         }
 
         guard let resolved = pathResolver.validatePath(path) else {
-            return jsonError(403, "Access denied: \(path)")
+            return jsonError(403, "Access denied")
         }
 
         // Ensure parent directory exists
@@ -284,24 +287,29 @@ final class FileServer: ObservableObject {
                 try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
             }
         } catch {
-            return jsonError(500, "Failed to create parent directory: \(error.localizedDescription)")
+            return jsonError(500, "Failed to create parent directory")
         }
 
-        // Append to file (create if doesn't exist)
-        if FileManager.default.fileExists(atPath: resolved) {
-            guard let handle = FileHandle(forWritingAtPath: resolved) else {
-                return jsonError(500, "Cannot open file for writing: \(resolved)")
+        // Serialize append ops per-server so concurrent requests can't
+        // interleave seek/write on the same file.
+        var totalSize: Int64 = 0
+        var failure: (Int, String)? = nil
+        appendQueue.sync {
+            if FileManager.default.fileExists(atPath: resolved) {
+                guard let handle = FileHandle(forWritingAtPath: resolved) else {
+                    failure = (500, "Cannot open file for writing")
+                    return
+                }
+                handle.seekToEndOfFile()
+                handle.write(chunk)
+                handle.closeFile()
+            } else {
+                FileManager.default.createFile(atPath: resolved, contents: chunk)
             }
-            handle.seekToEndOfFile()
-            handle.write(chunk)
-            handle.closeFile()
-        } else {
-            FileManager.default.createFile(atPath: resolved, contents: chunk)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
+            totalSize = (attrs?[.size] as? Int64) ?? 0
         }
-
-        // Get final file size
-        let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
-        let totalSize = (attrs?[.size] as? Int64) ?? 0
+        if let (code, msg) = failure { return jsonError(code, msg) }
 
         return GCDWebServerResponse(jsonObject: [
             "success": true,
@@ -321,14 +329,14 @@ final class FileServer: ObservableObject {
             return jsonError(400, "Empty request body (expected application/zip)")
         }
         guard let resolvedDest = pathResolver.validatePath(destPath) else {
-            return jsonError(403, "Access denied: \(destPath)")
+            return jsonError(403, "Access denied")
         }
 
         let fm = FileManager.default
         do {
             try fm.createDirectory(atPath: resolvedDest, withIntermediateDirectories: true)
         } catch {
-            return jsonError(500, "Failed to create destination: \(error.localizedDescription)")
+            return jsonError(500, "Failed to create destination")
         }
 
         // ZIPFoundation reads from a file URL or Data. Write the uploaded body
@@ -344,7 +352,7 @@ final class FileServer: ObservableObject {
         do {
             archive = try Archive(url: URL(fileURLWithPath: tmpZip), accessMode: .read)
         } catch {
-            return jsonError(400, "Uploaded body is not a valid zip: \(error.localizedDescription)")
+            return jsonError(400, "Uploaded body is not a valid zip")
         }
 
         var filesExtracted = 0
@@ -378,7 +386,7 @@ final class FileServer: ObservableObject {
                 }
             }
         } catch {
-            return jsonError(500, "Zip extract failed: \(error.localizedDescription)")
+            return jsonError(500, "Zip extract failed")
         }
 
         return GCDWebServerResponse(jsonObject: [
@@ -396,12 +404,12 @@ final class FileServer: ObservableObject {
             return jsonError(400, "Missing 'path' query parameter")
         }
         guard let resolvedSrc = pathResolver.validatePath(srcPath) else {
-            return jsonError(403, "Access denied: \(srcPath)")
+            return jsonError(403, "Access denied")
         }
 
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolvedSrc, isDirectory: &isDir), isDir.boolValue else {
-            return jsonError(400, "Not a directory: \(resolvedSrc)")
+            return jsonError(400, "Not a directory")
         }
 
         // NSFileCoordinator .forUploading produces a native .zip of the
@@ -421,10 +429,10 @@ final class FileServer: ObservableObject {
         }
 
         if let err = coordError {
-            return jsonError(500, "Zip create failed: \(err.localizedDescription)")
+            return jsonError(500, "Zip create failed")
         }
-        if let err = zipError {
-            return jsonError(500, "Zip read failed: \(err)")
+        if zipError != nil {
+            return jsonError(500, "Zip read failed")
         }
         guard let data = zipData else {
             return jsonError(500, "Zip create produced no data")
