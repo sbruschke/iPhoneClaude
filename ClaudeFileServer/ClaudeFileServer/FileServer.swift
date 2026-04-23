@@ -9,6 +9,7 @@ final class FileServer: ObservableObject {
 
     let auth: AuthMiddleware
     private var server: GCDWebServer?
+    private var bonjourService: NetService?
     private let fileOps = FileOperations.shared
     private let pathResolver = PathResolver.shared
     // Serial queue to serialize /api/append writes across concurrent
@@ -29,15 +30,40 @@ final class FileServer: ObservableObject {
 
         registerRoutes(on: webServer)
 
+        // The vendored GCDWebServer subset accepts a bonjourName arg but
+        // doesn't publish — we run our own NetService below.
         let started = webServer.start(withPort: port, bonjourName: nil)
         isRunning = started && webServer.isRunning
         ipAddress = Self.getWiFiAddress() ?? "unknown"
+
+        if isRunning {
+            publishBonjour()
+        }
     }
 
     func stop() {
+        bonjourService?.stop()
+        bonjourService = nil
         server?.stop()
         server = nil
         isRunning = false
+    }
+
+    private func publishBonjour() {
+        let service = NetService(domain: "local.",
+                                 type: "_claude-file-server._tcp.",
+                                 name: UIDevice.current.name,
+                                 port: Int32(port))
+        // TXT record advertises the service version so the client can
+        // tell builds apart during discovery.
+        let txt: [String: Data] = [
+            "version": Data("1.0".utf8),
+            "path": Data("/api".utf8),
+        ]
+        let txtData = NetService.data(fromTXTRecord: txt)
+        service.setTXTRecord(txtData)
+        service.publish()
+        bonjourService = service
     }
 
     // MARK: - Route Registration

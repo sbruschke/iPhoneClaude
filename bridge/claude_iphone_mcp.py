@@ -29,15 +29,23 @@ TOKEN = os.environ.get("IPHONE_TOKEN", "")
 mcp = FastMCP("iphone-file-server")
 
 
+_CONFIG_HINT = (
+    "Configure the MCP server in ~/.claude.json under "
+    "mcpServers.iphone.env — set IPHONE_HOST (phone's LAN IP) and "
+    "IPHONE_TOKEN (token shown in the ClaudeFileServer app). "
+    "Run iphone_discover() to find the phone via mDNS."
+)
+
+
 def _base_url() -> str:
     if not HOST:
-        raise RuntimeError("IPHONE_HOST not set")
+        raise RuntimeError(f"IPHONE_HOST not set. {_CONFIG_HINT}")
     return f"http://{HOST}:{PORT}/api"
 
 
 def _auth_headers() -> dict[str, str]:
     if not TOKEN:
-        raise RuntimeError("IPHONE_TOKEN not set")
+        raise RuntimeError(f"IPHONE_TOKEN not set. {_CONFIG_HINT}")
     return {"Authorization": f"Bearer {TOKEN}"}
 
 
@@ -515,6 +523,61 @@ def iphone_sync(local_dir: str, remote_dir: str) -> str:
         "zip_bytes": zip_size,
         "server": result,
     }, indent=2)
+
+
+@mcp.tool()
+def iphone_discover(timeout_sec: float = 3.0) -> str:
+    """Discover ClaudeFileServer instances on the LAN via mDNS/Bonjour.
+
+    Requires the `zeroconf` Python package (pip install zeroconf). Returns
+    a list of {name, host, port, version} entries — paste the matching
+    host into IPHONE_HOST in ~/.claude.json.
+
+    Args:
+        timeout_sec: How long to listen for service announcements. Default 3s.
+    """
+    try:
+        from zeroconf import ServiceBrowser, Zeroconf
+    except ImportError:
+        raise RuntimeError(
+            "zeroconf not installed. `pip install zeroconf` (bridge venv) "
+            "to use mDNS discovery. Or set IPHONE_HOST manually in ~/.claude.json."
+        )
+    import socket as _socket
+
+    found: list[dict[str, Any]] = []
+
+    class _Listener:
+        def add_service(self, zc: Any, type_: str, name: str) -> None:
+            info = zc.get_service_info(type_, name)
+            if info is None:
+                return
+            addrs = info.parsed_scoped_addresses() if hasattr(info, "parsed_scoped_addresses") else []
+            if not addrs:
+                addrs = [_socket.inet_ntoa(a) for a in getattr(info, "addresses", []) if len(a) == 4]
+            props = {
+                (k.decode() if isinstance(k, bytes) else k):
+                (v.decode() if isinstance(v, bytes) else v)
+                for k, v in (info.properties or {}).items()
+            }
+            found.append({
+                "name": name.split(".")[0],
+                "hosts": addrs,
+                "port": info.port,
+                "version": props.get("version", ""),
+            })
+
+        def update_service(self, *args: Any, **kwargs: Any) -> None: pass
+        def remove_service(self, *args: Any, **kwargs: Any) -> None: pass
+
+    zc = Zeroconf()
+    try:
+        ServiceBrowser(zc, "_claude-file-server._tcp.local.", _Listener())
+        time.sleep(timeout_sec)
+    finally:
+        zc.close()
+
+    return json.dumps({"found": found, "count": len(found)}, indent=2)
 
 
 if __name__ == "__main__":
