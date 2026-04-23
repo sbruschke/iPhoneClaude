@@ -240,6 +240,20 @@ static const int kReadTimeoutSecs = 30;
         int nosig = 1;
         setsockopt(clientFd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, sizeof(nosig));
 
+        // CRITICAL: Darwin's accept() inherits the listen socket's non-blocking
+        // flag onto the client fd (unlike Linux, which always returns blocking
+        // fds). With O_NONBLOCK on the client fd, read() returns EAGAIN
+        // immediately whenever the kernel's receive buffer is momentarily
+        // empty — and SO_RCVTIMEO has no effect. That was the bug behind the
+        // "~16 KB cliff": once the initial TCP segment was drained, the next
+        // read() happened before the next segment arrived, EAGAIN fired, and
+        // the body handler bailed. Clear the flag so read() blocks properly
+        // (respecting SO_RCVTIMEO set below).
+        int flags = fcntl(clientFd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(clientFd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+
         // Set a receive timeout so we don't block GCD threads forever on dead clients
         struct timeval tv;
         tv.tv_sec = kReadTimeoutSecs;
