@@ -72,6 +72,11 @@ final class FileServer: ObservableObject {
         server.addHandler(forMethod: "PUT", path: "/api/upload", request: GCDWebServerRequest.self) { [weak self] request in
             self?.handleUpload(request: request)
         }
+
+        // POST /api/append?path=... — append raw binary to existing file
+        server.addHandler(forMethod: "POST", path: "/api/append", request: GCDWebServerRequest.self) { [weak self] request in
+            self?.handleAppend(request: request)
+        }
     }
 
     // MARK: - Route Handlers
@@ -244,6 +249,55 @@ final class FileServer: ObservableObject {
             "success": true,
             "path": path,
             "size": body.count
+        ] as [String: Any])
+    }
+
+    private func handleAppend(request: GCDWebServerRequest) -> GCDWebServerResponse? {
+        if let err = checkAuth(request) { return err }
+
+        guard let path = request.query["path"], !path.isEmpty else {
+            return jsonError(400, "Missing 'path' query parameter")
+        }
+
+        guard let chunk = request.body, chunk.count > 0 else {
+            return jsonError(400, "Empty request body")
+        }
+
+        guard let resolved = pathResolver.validatePath(path) else {
+            return jsonError(403, "Access denied: \(path)")
+        }
+
+        // Ensure parent directory exists
+        let parent = (resolved as NSString).deletingLastPathComponent
+        do {
+            if !FileManager.default.fileExists(atPath: parent) {
+                try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            }
+        } catch {
+            return jsonError(500, "Failed to create parent directory: \(error.localizedDescription)")
+        }
+
+        // Append to file (create if doesn't exist)
+        if FileManager.default.fileExists(atPath: resolved) {
+            guard let handle = FileHandle(forWritingAtPath: resolved) else {
+                return jsonError(500, "Cannot open file for writing: \(resolved)")
+            }
+            handle.seekToEndOfFile()
+            handle.write(chunk)
+            handle.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: resolved, contents: chunk)
+        }
+
+        // Get final file size
+        let attrs = try? FileManager.default.attributesOfItem(atPath: resolved)
+        let totalSize = (attrs?[.size] as? Int64) ?? 0
+
+        return GCDWebServerResponse(jsonObject: [
+            "success": true,
+            "path": path,
+            "appendedBytes": chunk.count,
+            "totalSize": totalSize
         ] as [String: Any])
     }
 
