@@ -14,18 +14,18 @@
             "iconURL": "https://raw.githubusercontent.com/sbruschke/iPhoneClaude/main/icon.png",
             "tintColor": "#DA7756",
             "category": "utilities",
-            "version": "1.0.12",
+            "version": "1.0.14",
             "versionDate": "2026-04-23",
-            "versionDescription": "Build from commit 11dfbab",
-            "downloadURL": "https://github.com/sbruschke/iPhoneClaude/releases/download/v1.0.12-12+11dfbab/ClaudeFileServer.ipa",
-            "size": 161532,
+            "versionDescription": "Build from commit 28299f4",
+            "downloadURL": "https://github.com/sbruschke/iPhoneClaude/releases/download/v1.0.14-14+28299f4/ClaudeFileServer.ipa",
+            "size": 173279,
             "versions": [
                 {
-                    "version": "1.0.12",
+                    "version": "1.0.14",
                     "date": "2026-04-23",
-                    "localizedDescription": "Build from commit 11dfbab",
-                    "downloadURL": "https://github.com/sbruschke/iPhoneClaude/releases/download/v1.0.12-12+11dfbab/ClaudeFileServer.ipa",
-                    "size": 161532,
+                    "localizedDescription": "Build from commit 28299f4",
+                    "downloadURL": "https://github.com/sbruschke/iPhoneClaude/releases/download/v1.0.14-14+28299f4/ClaudeFileServer.ipa",
+                    "size": 173279,
                     "minOSVersion": "15.0"
                 }
             ]
