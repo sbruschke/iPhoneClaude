@@ -8,8 +8,10 @@ Multi-phone configuration:
 
     Tools:
         iphone_discover()              — LAN-scan for ClaudeFileServer responders
-        iphone_register(host, token)   — add a phone to the config
-        iphone_list_phones()           — show registered phones + which is active
+        iphone_pair(host)              — in-app approval flow; no token copy-paste
+        iphone_register(host, token)   — add a phone to the config (if you already have a token)
+        iphone_ping(name_or_host="")   — quick health check; no auth
+        iphone_list_phones()           — show registered phones + which is active (+reachability)
         iphone_select(name_or_host)    — switch the active phone for subsequent calls
         iphone_unregister(name_or_host)— remove a phone
 
@@ -642,37 +644,125 @@ def _probe_ping(host: str, port: str, timeout: float) -> dict[str, Any] | None:
 
 
 @mcp.tool()
-def iphone_discover(port: str = "8080", per_host_timeout_sec: float = 0.3,
-                    workers: int = 64) -> str:
+def iphone_discover(port: str = "8080", fast_timeout_sec: float = 0.5,
+                    slow_timeout_sec: float = 1.5, workers: int = 64) -> str:
     """LAN-scan for ClaudeFileServer instances. Returns the device name,
     model, iOS version, and server version of every responder — no auth
     needed (the /api/ping endpoint is open).
 
+    Two-pass scan: first pass at `fast_timeout_sec` catches awake phones
+    quickly; second pass re-probes the non-responders at `slow_timeout_sec`
+    so phones whose WiFi radio was asleep on the first hit still get
+    discovered. Total worst case ≈ (fast + slow) for a /24.
+
     Paste a host into `iphone_register(host="…", token="…", name="…")`
-    with the token from that phone's ClaudeFileServer UI.
+    with the token from that phone's ClaudeFileServer UI, OR use
+    iphone_pair(host="…") to prompt the user to approve the connection
+    in-app and auto-save the token.
 
     Args:
         port: TCP port to probe. Default 8080.
-        per_host_timeout_sec: Per-host connect/read timeout. Default 0.3s.
-        workers: Parallel probes. Default 64 (/24 finishes in ~1-2s).
+        fast_timeout_sec: First-pass per-host timeout. Default 0.5s.
+        slow_timeout_sec: Second-pass timeout for non-responders. Default 1.5s.
+        workers: Parallel probes. Default 64.
     """
     subnets = _local_ipv4_subnets()
     if not subnets:
         raise RuntimeError("Could not determine local IPv4 subnets")
     hosts = [str(h) for net in subnets for h in net.hosts()]
-    found: list[dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        for result in ex.map(
-            lambda h: _probe_ping(h, port, per_host_timeout_sec),
-            hosts,
-        ):
-            if result is not None:
-                found.append(result)
+    found: dict[str, dict[str, Any]] = {}
+
+    def _scan(targets: list[str], timeout: float) -> None:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            for host, result in zip(
+                targets,
+                ex.map(lambda h: _probe_ping(h, port, timeout), targets),
+            ):
+                if result is not None:
+                    found[host] = result
+
+    _scan(hosts, fast_timeout_sec)
+    # Retry only the silent hosts. Skips the hosts we already found so the
+    # total is bounded.
+    missed = [h for h in hosts if h not in found]
+    if missed:
+        _scan(missed, slow_timeout_sec)
+
     return json.dumps({
         "subnets_scanned": [str(s) for s in subnets],
         "hosts_probed": len(hosts),
-        "found": found,
+        "found": list(found.values()),
         "count": len(found),
+    }, indent=2)
+
+
+@mcp.tool()
+def iphone_pair(host: str, name: str = "", port: str = "8080") -> str:
+    """Pair with an iPhone without copy-pasting the token.
+
+    Flow: (1) the user opens ClaudeFileServer on the target phone and taps
+    'Accept Pairing Requests' to open a 60s window; (2) this tool POSTs
+    /api/pair_request; (3) a confirmation prompt appears on the phone;
+    (4) on approval, the server returns the token and this tool saves it
+    to ~/.iphone_bridge.json and makes the phone active.
+
+    The server blocks the HTTP response for up to 30s waiting for the
+    user's tap, so plan for a short wait.
+
+    Args:
+        host: iPhone LAN IP address.
+        name: Optional label. Defaults to the phone's configured label
+              (or iOS device name).
+        port: Default 8080.
+    """
+    import socket as _socket
+    requester = f"Claude Code @ {_socket.gethostname()}"
+    fingerprint = hashlib.sha256(
+        f"{_socket.gethostname()}|{os.getuid() if hasattr(os, 'getuid') else ''}".encode()
+    ).hexdigest()[:16]
+
+    try:
+        resp = httpx.post(
+            f"http://{host}:{port}/api/pair_request",
+            json={"requester": requester, "fingerprint": fingerprint},
+            timeout=35.0,  # server-side timeout is 30s; add slack for the response.
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Could not reach {host}:{port} — is the server running? ({exc})")
+
+    if resp.status_code == 403:
+        msg = resp.json().get("error", "Forbidden")
+        raise RuntimeError(
+            f"Pair rejected: {msg}. "
+            "Open ClaudeFileServer on the phone, tap 'Accept Pairing Requests' to "
+            "open the 60s window, then retry iphone_pair()."
+        )
+    if resp.status_code == 408:
+        raise RuntimeError("The user didn't approve in time — try again.")
+    resp.raise_for_status()
+    data = resp.json()
+    token = data["token"]
+    device_name = data.get("device_name", host)
+    final_name = name or device_name
+
+    cfg = _load_config()
+    cfg.setdefault("phones", [])
+    cfg["phones"] = [p for p in cfg["phones"]
+                     if p["name"] != final_name and p["host"] != host]
+    cfg["phones"].append({
+        "name": final_name, "host": host, "port": port, "token": token,
+    })
+    if not cfg.get("active") or cfg.get("active") == "env":
+        cfg["active"] = final_name
+    _save_config(cfg)
+
+    return json.dumps({
+        "paired": final_name,
+        "host": host,
+        "port": port,
+        "device_name": device_name,
+        "active": cfg["active"],
+        "total_phones": len(cfg["phones"]),
     }, indent=2)
 
 
@@ -732,20 +822,71 @@ def iphone_register(host: str, token: str, name: str = "",
 
 
 @mcp.tool()
-def iphone_list_phones() -> str:
-    """List registered iPhones and which one is active. Tokens are redacted."""
+def iphone_list_phones(probe: bool = True,
+                       probe_timeout_sec: float = 0.6) -> str:
+    """List registered iPhones and which one is active. Tokens are redacted.
+
+    If `probe` is True (default), each phone is pinged in parallel via
+    /api/ping and the response (or 'offline') is attached as `reachable`.
+
+    Args:
+        probe: Ping each phone to fill in reachability. Default True.
+        probe_timeout_sec: Per-phone timeout when probing. Default 0.6s.
+    """
     cfg = _load_config()
-    redacted = [{
-        "name": p["name"],
-        "host": p["host"],
-        "port": p.get("port", "8080"),
-        "token_prefix": (p["token"][:6] + "…") if p.get("token") else "",
-    } for p in cfg.get("phones", [])]
+    phones = cfg.get("phones", [])
+
+    results: dict[str, dict[str, Any]] = {}
+    if probe and phones:
+        def _check(p: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+            return p["name"], _probe_ping(p["host"], p.get("port", "8080"),
+                                          probe_timeout_sec)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(phones))) as ex:
+            for name, ping in ex.map(_check, phones):
+                results[name] = ping or {}
+
+    out = []
+    for p in phones:
+        ping = results.get(p["name"]) or {}
+        out.append({
+            "name": p["name"],
+            "host": p["host"],
+            "port": p.get("port", "8080"),
+            "token_prefix": (p["token"][:6] + "…") if p.get("token") else "",
+            "reachable": bool(ping) if probe else None,
+            "server_version": ping.get("server_version", "") if ping else "",
+            "device_name": ping.get("device_name", "") if ping else "",
+        })
     return json.dumps({
         "active": cfg.get("active"),
-        "phones": redacted,
+        "phones": out,
         "config_path": str(CONFIG_PATH),
     }, indent=2)
+
+
+@mcp.tool()
+def iphone_ping(name_or_host: str = "") -> str:
+    """Quick health check — hit /api/ping on a phone (no auth needed).
+
+    Args:
+        name_or_host: Which phone to ping. Empty = active phone.
+    """
+    cfg = _load_config()
+    if name_or_host:
+        target = None
+        for p in cfg.get("phones", []):
+            if p["name"] == name_or_host or p["host"] == name_or_host:
+                target = p
+                break
+        if target is None:
+            # Allow pinging an unregistered host too.
+            target = {"host": name_or_host, "port": "8080", "name": name_or_host}
+    else:
+        target = _active_phone()
+    result = _probe_ping(target["host"], target.get("port", "8080"), 2.0)
+    if result is None:
+        raise RuntimeError(f"No response from {target['host']}:{target.get('port', '8080')}")
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
